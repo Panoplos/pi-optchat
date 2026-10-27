@@ -132,9 +132,15 @@ export default function optchat(pi: ExtensionAPI) {
   };
   pi.on('model_select', (_event, ctx) => rememberMain(ctx));
   pi.on('thinking_level_select', (_event, ctx) => rememberMain(ctx));
-  const restoreMain = async (ctx: ExtensionContext, { name, config: { main } }: Active) => {
+  const restoreMain = async (ctx: ExtensionContext, active: Active) => {
+    const { name, config: { main } } = active;
     restored = undefined;
-    if (!main || pinnedModel || launch.models && !ctx.scopedModels.some(({ model }) => model.provider === main.provider && model.id === main.model)) return;
+    if (!main) {
+      // A profile written before the main model followed Pi has no pick to restore. Record where Pi is, so it stops following Pi from the next open on.
+      if (!pinnedModel) rememberMain(ctx);
+      return;
+    }
+    if (pinnedModel || launch.models && !ctx.scopedModels.some(({ model }) => model.provider === main.provider && model.id === main.model)) return;
     const model = ctx.modelRegistry.find(main.provider, main.model), thinking = launch.thinking ?? main.thinking;
     restoring = true;
     try {

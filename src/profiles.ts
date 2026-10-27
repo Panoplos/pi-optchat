@@ -12,7 +12,7 @@ export const isWindows = process.platform === 'win32';
 const PIPE_PREFIX = '\\\\.\\pipe\\';
 
 export const dataHome = () => resolve(process.env.OPTCHAT_HOME ?? join(homedir(), '.optchat'));
-/** `main` is the last model and thinking level picked in Pi while this profile was open; absent until one is picked.
+/** `main` is the last model and thinking level picked in Pi while this profile was open, recorded on the first open too.
  * A role without its own pick follows `main`, so OptChat runs on the model the user is already using. */
 export interface ProfileConfig extends Settings { compactor?: ModelChoice; subagent?: ModelChoice; main?: ModelChoice }
 /** Roles whose own pick overrides following Pi's model. */
