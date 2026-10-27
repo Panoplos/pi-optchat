@@ -3,7 +3,7 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import { getCurrentSystemMessage, type SystemMessage } from '@earendil-works/pi-ai';
 import { cap, flat, isView, type Memory } from './core/memory.ts';
-import { completedExchange, logMessage as log, TASK_HEADER, textContent as text, withView } from './core/messages.ts';
+import { completedExchange, logMessage as log, messageChars, TASK_HEADER, textContent as text, withView } from './core/messages.ts';
 import { AT_WORK } from './core/prompts.ts';
 import { record } from './core/cache.ts';
 import { DEFAULT_SETTINGS } from './settings.ts';
@@ -144,4 +144,11 @@ export function buildContext(canonical: AgentMessage[], run: AgentMessage[], vie
 export function refreshFraction(setting: number, env = process.env.OPTCHAT_REFRESH_AT) {
   const override = env?.trim() ? Number(env) : NaN;
   return Number.isFinite(override) ? override : setting;
+}
+
+/** How full the turn's verbatim tail is of its refresh budget, as the footer shows it: at 100% the next step moves into memory. */
+export function turnUsage(run: readonly AgentMessage[], keep: number, budget: number | undefined) {
+  if (!budget) return undefined;
+  const contextWindow = Math.floor(budget / 4), tokens = Math.floor(run.slice(keep).reduce((sum, m) => sum + messageChars(m), 0) / 4);
+  return { tokens, contextWindow, percent: (tokens / contextWindow) * 100 };
 }

@@ -8,7 +8,7 @@ import { createAssistantMessageEventStream, type AssistantMessage, type Context 
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import optchat from '../src/index.ts';
 import { createProfile, loadConfig, profilePath, saveConfig } from '../src/profiles.ts';
-import { buildContext, refreshFraction, textContent } from '../src/transcript.ts';
+import { buildContext, refreshFraction, textContent, turnUsage } from '../src/transcript.ts';
 import { messageChars, refreshBudget, refreshedRun, refreshPoint } from '../src/core/messages.ts';
 const chars = (messages: readonly AgentMessage[]) => messages.reduce((sum, m) => sum + messageChars(m), 0);
 import { parsePercent } from '../src/settings-page.ts';
@@ -37,6 +37,14 @@ test('the threshold is typed as 30, 30% or 0.3, OPTCHAT_REFRESH_AT overrides it,
   assert.equal(refreshFraction(0.3, undefined), 0.3);
   assert.equal(refreshFraction(0.3, '0.08'), 0.08);
   assert.equal(refreshBudget(200_000, refreshFraction(0.3, '0')), undefined);
+});
+
+test('the footer figure is the tail against the refresh budget, and nothing when the refresh is off', () => {
+  const run: AgentMessage[] = [{ role: 'user', content: 'task', timestamp: 1 },
+    { role: 'user', content: 'y'.repeat(80), timestamp: 2 }];
+  assert.deepEqual(turnUsage(run, 1, 400), { tokens: 20, contextWindow: 100, percent: 20 }, 'the tail alone, not the task');
+  assert.equal(turnUsage(run, 0, undefined), undefined, 'off, so Pi keeps showing its own figure');
+  assert.equal(turnUsage(run, 1, 40)?.percent, 200, 'a step over the budget reads past 100%');
 });
 
 test('a step too big to keep whole is refreshed anyway, its tail cut to the budget', () => {

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { hostname } from 'node:os';
 import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
-import { parseArgs, parseSessionEntries, parseSkillBlock, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext, type CustomEntry, type FileEntry, type SessionStartEvent } from '@earendil-works/pi-coding-agent';
+import { parseArgs, parseSessionEntries, parseSkillBlock, type ContextUsage, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext, type CustomEntry, type ExtensionUIContext, type FileEntry, type SessionStartEvent } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { Memory } from './memory.ts';
 import { atomicWrite, storeFor } from './store.ts';
@@ -14,7 +14,7 @@ import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, SEARCH_DOC, TURN_REFRESHED, V
 import { MASTER, modelsHint } from './prompts.ts';
 import { cachePayload, record } from './core/cache.ts';
 import { saveImages } from './images.ts';
-import { asUser, atWork, buildContext, logMessage, previousExchange, refreshFraction, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, textContent, typedText } from './transcript.ts';
+import { asUser, atWork, buildContext, logMessage, previousExchange, refreshFraction, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, textContent, turnUsage, typedText } from './transcript.ts';
 import { boundedMessage, refreshedRun, refreshBudget, refreshPoint } from './core/messages.ts';
 import { registerReportRenderer, type ReportDetails } from './report-message.ts';
 import { memoryTools } from './tools.ts';
@@ -62,6 +62,9 @@ export const version = ((): string | undefined => {
   } catch { return undefined; }
 })();
 const brand = version ? `OptChat v${version}` : 'OptChat';
+
+/** Pi's `setContextUsage`, which the pinned Pi types predate; a Pi without it shows its own context figure instead. */
+const usageSlot = (ui: ExtensionUIContext) => ui as ExtensionUIContext & { setContextUsage?: (usage: ContextUsage | undefined) => void };
 
 export default function optchat(pi: ExtensionAPI) {
   let active: Active | undefined;
@@ -499,7 +502,7 @@ export default function optchat(pi: ExtensionAPI) {
   });
   pi.on('context_with_system', async (event, ctx) => {
     try {
-      if (!active) return; // Plain Pi run: pass context through unmodified.
+      if (!active) { usageSlot(ctx.ui).setContextUsage?.(undefined); return; } // Plain Pi run: pass context through unmodified.
       const a = required();
       if (importing || pendingImport(a.dir)) throw new Error('Profile is unavailable while importing.');
       if (fault) throw new Error(fault);
@@ -531,6 +534,8 @@ export default function optchat(pi: ExtensionAPI) {
         view = a.memory.render(); keep = cut;
         ctx.ui.notify(`OptChat moved ${Math.round(size / 4000)}k tokens of this turn into memory (${((Date.now() - began) / 1000).toFixed(1)}s).`, 'info');
       }
+      // The footer's context figure is the tail against this profile's refresh threshold, the number the turn is actually held to.
+      usageSlot(ctx.ui).setContextUsage?.(turnUsage(run, keep, budget));
       // Built on every call, unlike the view, so it is never out of date; it goes last, after everything cached.
       return { messages: buildContext(event.messages, refreshedRun(run, keep, TURN_REFRESHED, budget), view, prompt, previous, atWork(a.children.working)) };
     } catch (error) {
