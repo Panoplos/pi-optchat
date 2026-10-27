@@ -14,7 +14,7 @@ import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, SEARCH_DOC, TURN_REFRESHED, V
 import { MASTER, modelsHint } from './prompts.ts';
 import { cachePayload, record } from './core/cache.ts';
 import { saveImages } from './images.ts';
-import { asUser, atWork, buildContext, logMessage, previousExchange, refreshFraction, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, textContent, turnUsage, typedText } from './transcript.ts';
+import { asUser, atWork, buildContext, logMessage, previousExchange, refreshFraction, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, textContent, turnStepUsage, turnUsage, typedText } from './transcript.ts';
 import { boundedMessage, refreshedRun, refreshBudget, refreshPoint } from './core/messages.ts';
 import { registerReportRenderer, type ReportDetails } from './report-message.ts';
 import { memoryTools } from './tools.ts';
@@ -533,7 +533,16 @@ export default function optchat(pi: ExtensionAPI) {
       if (refresh) {
         const { cut, size } = refresh, began = Date.now();
         ctx.ui.setWorkingMessage(`OptChat: moving this turn's ${Math.round(size / 4000)}k tokens into memory…`);
-        try { flush(); await a.memory.settle(ctx.signal); } finally { ctx.ui.setWorkingMessage(); }
+        // The footer shows the tail at its threshold with the step memory is on, so the push is visible while it runs.
+        const step = () => {
+          const usage = turnStepUsage(budget, a.memory.stage);
+          if (usage) usageSlot(ctx.ui).setContextUsage?.(usage);
+        };
+        try {
+          flush();
+          const unsubscribe = a.memory.onChange(step);
+          try { step(); await a.memory.settle(ctx.signal); } finally { unsubscribe(); }
+        } finally { ctx.ui.setWorkingMessage(); }
         view = a.memory.render(); keep = cut;
         ctx.ui.notify(`OptChat moved ${Math.round(size / 4000)}k tokens of this turn into memory (${((Date.now() - began) / 1000).toFixed(1)}s).`, 'info');
       }
