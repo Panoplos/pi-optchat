@@ -8,7 +8,7 @@ import { createAssistantMessageEventStream, type AssistantMessage, type Context 
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import optchat from '../src/index.ts';
 import { createProfile, loadConfig, profilePath, saveConfig } from '../src/profiles.ts';
-import { buildContext, messageChars, refreshBudget, refreshedRun, refreshFraction, refreshPoint, textContent, turnUsage } from '../src/transcript.ts';
+import { buildContext, messageChars, refreshBudget, refreshedRun, refreshFraction, refreshPoint, textContent, turnStepUsage, turnUsage } from '../src/transcript.ts';
 const chars = (messages: readonly AgentMessage[]) => messages.reduce((sum, m) => sum + messageChars(m), 0);
 import { parsePercent } from '../src/settings-page.ts';
 import { invalid } from '../src/settings.ts';
@@ -44,6 +44,12 @@ test('the footer figure is the tail against the refresh budget, and nothing when
   assert.deepEqual(turnUsage(run, 1, 400), { tokens: 20, contextWindow: 100, percent: 20 }, 'the tail alone, not the task');
   assert.equal(turnUsage(run, 0, undefined), undefined, 'off, so Pi keeps showing its own figure');
   assert.equal(turnUsage(run, 1, 40)?.percent, 200, 'a step over the budget reads past 100%');
+});
+
+test('while a push runs the footer reads full against the threshold, with the step memory is on', () => {
+  assert.deepEqual(turnStepUsage(400, 'summarizing'), { tokens: 100, contextWindow: 100, percent: 100, label: 'summarizing' });
+  assert.equal(turnStepUsage(400, undefined), undefined, 'nothing to report, so the figure stays where it was');
+  assert.equal(turnStepUsage(undefined, 'merging'), undefined, 'the refresh is off');
 });
 
 test('a step too big to keep whole is refreshed anyway, its tail cut to the budget', () => {

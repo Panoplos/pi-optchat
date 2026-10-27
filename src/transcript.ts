@@ -268,6 +268,13 @@ export function turnUsage(run: readonly AgentMessage[], keep: number, budget: nu
   const contextWindow = Math.floor(budget / 4), tokens = Math.floor(chars(run.slice(keep)) / 4);
   return { tokens, contextWindow, percent: (tokens / contextWindow) * 100 };
 }
+/** The same figure while a refresh pushes the turn into memory: the tail has reached its threshold, and `step` names what memory
+ * is doing with it, for Pi to show after the figure. Undefined when there is nothing to report. */
+export function turnStepUsage(budget: number | undefined, step: string | undefined) {
+  if (!budget || !step) return undefined;
+  const contextWindow = Math.floor(budget / 4);
+  return { tokens: contextWindow, contextWindow, percent: 100, label: step };
+}
 /** The run as sent after a mid-turn refresh at `keep`: the task verbatim, then the run from `keep` on, both held to `budget`
  * characters so a single step, such as many parallel tool results, cannot outgrow the window. Everything between is in the view. */
 export function refreshedRun(run: readonly AgentMessage[], keep: number, note: string, budget?: number): AgentMessage[] {

@@ -113,6 +113,26 @@ test('a turn waits for the view to be built, not for merges that bring it under 
   } finally { release(); await memory.close(); removeDir(dir); }
 });
 
+test('the stage names what a push is doing: the messages, then their merges', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-test-'));
+  let release = () => {};
+  const merging = new Promise<void>(resolve => { release = resolve; });
+  // Each 300-byte message is its own line, built without the compactor; merging the pair passes NODE, so it waits there.
+  const memory = new Memory(dir, async () => { await merging; return 'merged'; }, () => {}, 500);
+  try {
+    assert.equal(memory.stage, undefined, 'nothing in the view yet');
+    memory.append('user', 'a'.repeat(300));
+    assert.equal(memory.stage, 'summarizing', 'the message has no summary yet');
+    memory.append('user', 'b'.repeat(300));
+    for (const deadline = Date.now() + 2000; memory.stage !== 'merging' && Date.now() < deadline;) await new Promise(r => setTimeout(r, 5));
+    assert.equal(memory.stage, 'merging', 'both lines are built, their merge waits on the compactor');
+    assert.equal(memory.pending, 0);
+    release();
+    await memory.settle(AbortSignal.timeout(2000), 'tree');
+    assert.equal(memory.stage, undefined);
+  } finally { release(); await memory.close(); removeDir(dir); }
+});
+
 test('progress counts summaries against the largest backlog since it was last empty', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-test-'));
   let release = () => {};

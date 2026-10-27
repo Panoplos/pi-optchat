@@ -13,7 +13,7 @@ import { createProfile, holdProfile, instructions, isWindows, lastProfile, listP
 import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, MASTER, modelsHint, SEARCH_DOC, TURN_REFRESHED, VIEW_DOC } from './prompts.ts';
 import { cachePayload, record } from './cache.ts';
 import { saveImages } from './images.ts';
-import { asUser, boundedMessage, atWork, buildContext, logMessage, previousExchange, refreshedRun, refreshBudget, refreshFraction, refreshPoint, turnUsage, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, textContent, typedText } from './transcript.ts';
+import { asUser, boundedMessage, atWork, buildContext, logMessage, previousExchange, refreshedRun, refreshBudget, refreshFraction, refreshPoint, turnStepUsage, turnUsage, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, textContent, typedText } from './transcript.ts';
 import { registerReportRenderer, type ReportDetails } from './report-message.ts';
 import { memoryTools, result, searchTool } from './tools.ts';
 import { Children, loadedBuiltins, modelsTool, refreshContextFiles, TASKS } from './agents.ts';
@@ -516,7 +516,16 @@ export default function optchat(pi: ExtensionAPI) {
       if (refresh) {
         const { cut, size } = refresh, began = Date.now();
         ctx.ui.setWorkingMessage(`OptChat: moving this turn's ${Math.round(size / 4000)}k tokens into memory…`);
-        try { flush(); await a.memory.settle(ctx.signal); } finally { ctx.ui.setWorkingMessage(); }
+        // The footer shows the tail at its threshold with the step memory is on, so the push is visible while it runs.
+        const step = () => {
+          const usage = turnStepUsage(budget, a.memory.stage);
+          if (usage) usageSlot(ctx.ui).setContextUsage?.(usage);
+        };
+        try {
+          flush();
+          const unsubscribe = a.memory.onChange(step);
+          try { step(); await a.memory.settle(ctx.signal); } finally { unsubscribe(); }
+        } finally { ctx.ui.setWorkingMessage(); }
         view = a.memory.render(); keep = cut;
         ctx.ui.notify(`OptChat moved ${Math.round(size / 4000)}k tokens of this turn into memory (${((Date.now() - began) / 1000).toFixed(1)}s).`, 'info');
       }

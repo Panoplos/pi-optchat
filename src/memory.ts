@@ -236,6 +236,12 @@ export class Memory {
   render() { return `${VIEW_OPEN}${this.view.map(p => `${start(p)}+${2 ** p.l}|${flat(this.text(p))}`).join('\n')}\n</chat>`; }
   get ready() { return this.view.every(p => this.node(p)); }
   get pending() { return this.unbuilt.size; }
+  /** What a push is doing: messages waiting for their summary, then merges of the summaries built so far. */
+  get stage(): 'summarizing' | 'merging' | undefined {
+    if (this.unbuilt.size) return 'summarizing';
+    if (this.merges.size) return 'merging';
+    return undefined;
+  }
   get active() { return this.busy.size; }
   get size() { return this.chat.size; }
   /** Summaries built out of the backlog since it was last empty, and when the next failed one is retried. */
