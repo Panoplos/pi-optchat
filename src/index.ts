@@ -508,7 +508,10 @@ export default function optchat(pi: ExtensionAPI) {
       const current = ctx.getSystemPrompt();
       if (current.startsWith(MASTER.slice(0, 40))) prompt = current;
       // A turn past its budget moves its steps into the view, keeping the task and the last tool call whole (#146).
-      const budget = refreshBudget(ctx.model?.contextWindow, refreshFraction(a.config.refreshAt));
+      // The window is Pi's effective one: a per-model `maxContext` set in /context caps the model spec, so this budget and the
+      // figure the footer shows move with the number you set there. Pi reports it while the token count is unknown too.
+      const window = ctx.getContextUsage()?.contextWindow ?? ctx.model?.contextWindow;
+      const budget = refreshBudget(window, refreshFraction(a.config.refreshAt));
       const refresh = refreshPoint(run, keep, budget);
       if (refresh) {
         const { cut, size } = refresh, began = Date.now();
