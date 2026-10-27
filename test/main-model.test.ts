@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { createAssistantMessageEventStream, type AssistantMessage, type Context } from '@earendil-works/pi-ai';
 import { createAgentSession, DefaultResourceLoader, ModelRegistry, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import optchat from '../src/index.ts';
-import { createProfile, loadConfig, profilePath, roleChoice, saveConfig } from '../src/profiles.ts';
+import { createProfile, defaults, loadConfig, profilePath, roleChoice, saveConfig } from '../src/profiles.ts';
 import { createCompressor, type ModelChoice } from '../src/compactor.ts';
 import { COMPACT } from '../src/prompts.ts';
 import { emptyUsage } from '../src/usage.ts';
@@ -142,4 +142,15 @@ test('the compactor defaults to the model Pi is on and follows a switch', async 
     if (oldHome === undefined) delete process.env.OPTCHAT_HOME; else process.env.OPTCHAT_HOME = oldHome;
     removeDir(dir);
   }
+});
+
+test('a role with no saved pick follows the model Pi is on now', () => {
+  // What the import dialog and its compactor ask for: a profile whose config.json has no compactor, subagent or main yet
+  // (picks are only saved once one is made in Pi) still compresses on Pi's model instead of refusing.
+  const pi: ModelChoice = { provider: 'fixture', model: 'plain', thinking: 'off' };
+  assert.deepEqual(roleChoice(defaults, 'compactor', pi), pi);
+  const main: ModelChoice = { provider: 'fixture', model: 'deep', thinking: 'low' };
+  assert.deepEqual(roleChoice({ ...defaults, main }, 'compactor', pi), main, 'the pick saved at the last /model wins over the model Pi is on now');
+  const pinned: ModelChoice = { provider: 'fixture', model: 'pinned', thinking: 'high' };
+  assert.deepEqual(roleChoice({ ...defaults, main, compactor: pinned }, 'compactor', pi), pinned, 'and the compactor\'s own pick wins over both');
 });

@@ -17,8 +17,8 @@ export const dataHome = () => resolve(process.env.OPTCHAT_HOME ?? join(homedir()
 export interface ProfileConfig extends Settings { compactor?: ModelChoice; subagent?: ModelChoice; main?: ModelChoice }
 /** Roles whose own pick overrides following Pi's model. */
 export type Role = 'compactor' | 'subagent';
-/** What a role runs on: its own pick, else the model Pi is on (as last saved while this profile was open). */
-export const roleChoice = (config: ProfileConfig, role: Role) => config[role] ?? config.main;
+/** What a role runs on: its own pick, else the model saved from Pi (`main`), else the model Pi is on now, which a profile that has not saved one yet passes in. */
+export const roleChoice = (config: ProfileConfig, role: Role, pi?: ModelChoice) => config[role] ?? config.main ?? pi;
 /** Victor's models, sent only when the user pins them; the defaults follow Pi instead. */
 export const defaults: ProfileConfig = { ...DEFAULT_SETTINGS };
 export const THINKING = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;

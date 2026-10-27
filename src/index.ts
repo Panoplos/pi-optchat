@@ -233,8 +233,7 @@ export default function optchat(pi: ExtensionAPI) {
     try {
       const config = loadConfig(dir);
       // A role without its own pick follows Pi's model; the profile saves every pick, so this tracks /model and /thinking.
-      const modelFor = (role: Role): ModelChoice | undefined =>
-        roleChoice(config, role) ?? (ctx.model && { provider: ctx.model.provider, model: ctx.model.id, thinking: pi.getThinkingLevel() });
+      const modelFor = (role: Role): ModelChoice | undefined => roleChoice(config, role, mainChoice(ctx));
       const picked = (role: Role): ModelChoice => {
         const choice = modelFor(role);
         if (!choice) throw new Error(`No model yet: choose one in Pi (/model), or give ${role === 'compactor' ? 'the compactor' : 'subagents'} their own with /optchat ${role === 'compactor' ? 'model' : 'agents model'}.`);
@@ -628,7 +627,7 @@ export default function optchat(pi: ExtensionAPI) {
           }
           if (selected !== 'Resume import') return;
         } else {
-          const importModel = roleChoice(a.config, 'compactor');
+          const importModel = roleChoice(a.config, 'compactor', mainChoice(ctx));
           const plan = await chooseImport(ctx, a.name, a.memory, importModel ? `${importModel.provider}/${importModel.model} (${importModel.thinking})` : 'Pi\'s model', signal);
           if (!plan) return;
           signal.throwIfAborted();
@@ -638,7 +637,7 @@ export default function optchat(pi: ExtensionAPI) {
           if (!job) return;
         }
         if (!closed) { await a.memory.close(); closed = true; }
-        const compress = createCompressor(ctx.modelRegistry, () => { const choice = roleChoice(a.config, 'compactor'); if (!choice) throw new Error('No model yet: choose one in Pi (/model) or with /optchat model.'); return choice; }, message => {
+        const compress = createCompressor(ctx.modelRegistry, () => { const choice = roleChoice(a.config, 'compactor', mainChoice(ctx)); if (!choice) throw new Error('No model yet: choose one in Pi (/model) or with /optchat model.'); return choice; }, message => {
           a.usage.compression(message, 'import', ctx.sessionManager.getSessionId());
         }, () => a.config.summaryAcceptBytes);
         const completed = await showProgress(ctx, job, (signal, progress) => runImport(a.dir, compress, signal, a.config.jobs, progress), signal);
