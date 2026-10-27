@@ -32,7 +32,7 @@ const durableTool = <P extends TSchema>(tool: {
   execute: (callId: string, args: Static<P>) => Promise<{ content: ToolExecutionResult['output'] }>;
 }) => defineTool({
   name: tool.name, description: tool.description, parameters: tool.parameters, replay: 'safe',
-  execute: async (args, api) => ({ output: (await tool.execute(api.callId, args)).content }),
+  execute: async (args, api) => ({ output: (await tool.execute(api.callId, args as unknown as Static<P>)).content }),
 });
 
 export interface OptChatOptions {
@@ -280,9 +280,9 @@ export function optchat({ memory, conversation: id = ROOT_CONVERSATION_ID, promp
     /** Starts following the conversation, and resets it now if a run ended before a restart. Returns a function that stops. */
     attach(harness: Harness, ctx: Context) {
       attached.set(harness, ctx);
-      const stop = harness.subscribeCommits(() => void schedule());
+      const observation = harness.observeCommits({ advance: () => void schedule(), end: () => {} });
       void schedule();
-      return stop;
+      return () => observation.detach();
     },
   };
 }

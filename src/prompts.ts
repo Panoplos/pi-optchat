@@ -6,8 +6,8 @@ import type { FinishReason } from './runs.ts';
 
 /** Names the profile's subagent choice, so the agent has no gap to fill from memory when it spawns: unset means this
  * model, and the ids it knows from training drift, so the models tool is the only source for a named one. */
-export const modelsHint = ({ provider, model, thinking }: ModelChoice) =>
-  `Subagents run ${provider}/${model} at thinking ${thinking}: leave a task's model and thinking unset for that. Set either one only when the user asks for it. A named model takes its id from models(), never from memory: your training may not know the newest ones, and a family without a version ("Opus", "GPT") means the newest one.`;
+export const modelsHint = (choice: ModelChoice | undefined) =>
+  `Subagents run ${choice ? `${choice.provider}/${choice.model} at thinking ${choice.thinking}` : "the model Pi is on, at its thinking level"}: leave a task's model and thinking unset for that. Set either one only when the user asks for it. A named model takes its id from models(), never from memory: your training may not know the newest ones, and a family without a version ("Opus", "GPT") means the newest one.`;
 export const MASTER = `You are OptChat, an AI agent that works for one user in a single chat that
 never ends. Each turn starts with the view below, followed by the user's new
 message.

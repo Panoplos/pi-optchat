@@ -55,7 +55,7 @@ async function open(file: string, replies: FauxResponseStep[], compress: Compres
   for (const extension of extensions(memoryExtension)) registry.install(extension);
   const harness = await Harness.open(await SqliteStorage.open(db, { prefix: 'pi_' }),
     { models: withCacheMarks(models), registry, settings: { compaction: { enabled: false }, afterFailedRun: 'continue' },
-      onReport: (error, info) => { if (info.type === 'task_faulted' || info.type === 'task_parked') fault(error); } }, context);
+      onReport: report => { if (report.kind === 'task_faulted' || report.kind === 'task_interrupted') fault(report.error); } }, context);
   const root = await harness.root(context, { agent: { model: { provider: faux.provider.id, modelId: faux.getModel().id } } });
   memoryExtension.attach(harness, context);
   importer.attach(harness, context);

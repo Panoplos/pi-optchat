@@ -19,7 +19,7 @@ const DESCRIPTIONS: Record<MenuAction, string> = {
   import: 'Import history, or resume a paused import',
 };
 
-export interface MenuStatus { profile: string; messages: number; pending: number; compactor: ModelChoice; agents: ModelChoice; error?: string }
+export interface MenuStatus { profile: string; messages: number; pending: number; compactor?: ModelChoice; agents?: ModelChoice; error?: string }
 /** The status block as label and value; the plain menu outside the TUI shows the same rows. */
 export const statusRows = (s: MenuStatus) => [
   ['Memory', `${count(s.messages)} messages · ${count(s.pending)} pending`],
