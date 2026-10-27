@@ -262,6 +262,12 @@ function cutBlocks<M extends AgentMessage>(message: M, keep: number): M {
   });
   return cut ? { ...message, content } : message;
 }
+/** How full the turn's verbatim tail is of its refresh budget, as the footer shows it: at 100% the next step moves into memory. */
+export function turnUsage(run: readonly AgentMessage[], keep: number, budget: number | undefined) {
+  if (!budget) return undefined;
+  const contextWindow = Math.floor(budget / 4), tokens = Math.floor(chars(run.slice(keep)) / 4);
+  return { tokens, contextWindow, percent: (tokens / contextWindow) * 100 };
+}
 /** The run as sent after a mid-turn refresh at `keep`: the task verbatim, then the run from `keep` on, both held to `budget`
  * characters so a single step, such as many parallel tool results, cannot outgrow the window. Everything between is in the view. */
 export function refreshedRun(run: readonly AgentMessage[], keep: number, note: string, budget?: number): AgentMessage[] {
