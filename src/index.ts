@@ -9,7 +9,7 @@ import { Type } from 'typebox';
 import { Memory } from './memory.ts';
 import { atomicWrite, storeFor } from './store.ts';
 import { createCompressor, type ModelChoice } from './compactor.ts';
-import { createProfile, holdProfile, instructions, isWindows, lastProfile, listProfiles, loadConfig, profilePath, rememberProfile, saveConfig, ProfileBusyError, type ProfileConfig } from './profiles.ts';
+import { createProfile, holdProfile, instructions, isWindows, lastProfile, listProfiles, loadConfig, profilePath, rememberProfile, roleChoice, saveConfig, ProfileBusyError, type ProfileConfig, type Role } from './profiles.ts';
 import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, MASTER, modelsHint, SEARCH_DOC, TURN_REFRESHED, VIEW_DOC } from './prompts.ts';
 import { cachePayload, record } from './cache.ts';
 import { saveImages } from './images.ts';
@@ -150,12 +150,14 @@ export default function optchat(pi: ExtensionAPI) {
   const required = () => { if (!active) throw new Error('Choose an OptChat profile first: /optchat profile'); return active; };
   const status = (ctx: ExtensionContext) => {
     const a = active;
-    if (!a) { ctx.ui.setStatus('optchat', 'OptChat: choose profile'); return; }
+    if (!a) { ctx.ui.setStatus('stats:optchat', 'choose profile'); ctx.ui.setStatus('optchat', undefined); return; }
     // A display only: a broken import journal is refused where it matters, never here.
-    let note = '';
-    try { note = importing ? ' · importing' : pendingImport(a.dir) ? ' · import paused: /optchat import' : ''; }
-    catch { note = ' · import journal invalid'; }
-    ctx.ui.setStatus('optchat', `OptChat: ${a.name} · ${a.memory.root.length} messages · ${a.memory.pending} pending · ${a.children.ids.length} agents${note}`);
+    let note: string | undefined;
+    try { note = importing ? 'importing' : pendingImport(a.dir) ? 'import paused: /optchat import' : undefined; }
+    catch { note = 'import journal invalid'; }
+    // The name sits in Pi's stats line; only a state that needs a word gets the status line.
+    ctx.ui.setStatus('stats:optchat', a.name);
+    ctx.ui.setStatus('optchat', note);
   };
   // `steered` describes this process's Pi queue, so it is not journaled.
   const saveReports = () => { if (active) atomicWrite(join(active.dir, 'pending-reports.json'), JSON.stringify(reports, (key, value: unknown) => key === 'steered' ? undefined : value)); };
@@ -230,13 +232,21 @@ export default function optchat(pi: ExtensionAPI) {
     let openingMemory: Memory | undefined;
     try {
       const config = loadConfig(dir);
+      // A role without its own pick follows Pi's model; the profile saves every pick, so this tracks /model and /thinking.
+      const modelFor = (role: Role): ModelChoice | undefined =>
+        roleChoice(config, role) ?? (ctx.model && { provider: ctx.model.provider, model: ctx.model.id, thinking: pi.getThinkingLevel() });
+      const picked = (role: Role): ModelChoice => {
+        const choice = modelFor(role);
+        if (!choice) throw new Error(`No model yet: choose one in Pi (/model), or give ${role === 'compactor' ? 'the compactor' : 'subagents'} their own with /optchat ${role === 'compactor' ? 'model' : 'agents model'}.`);
+        return choice;
+      };
       const sessionId = ctx.sessionManager.getSessionId();
       const usage = new UsageLedger(dir);
       usage.backfill(ctx.sessionManager.getEntries(), sessionId);
       const pending = join(dir, 'pending-reports.json');
       const saved: unknown = existsSync(pending) ? JSON.parse(readFileSync(pending, 'utf8')) : [];
       if (!Array.isArray(saved) || !saved.every(isPendingReport)) throw new Error('Invalid pending report journal.');
-      const memory = await Memory.open(memoryDirectory(dir), createCompressor(ctx.modelRegistry, () => config.compactor, message => {
+      const memory = await Memory.open(memoryDirectory(dir), createCompressor(ctx.modelRegistry, () => picked('compactor'), message => {
         usage.compression(message, 'compactor', sessionId);
         status(ctx);
       }, () => config.summaryAcceptBytes), warning => ctx.ui.notify(warning, 'error'), undefined, config.jobs);
@@ -244,9 +254,9 @@ export default function optchat(pi: ExtensionAPI) {
       const inbox = new Inbox(dir);
       const recovered = pendingImport(dir) ? 0 : inbox.recover(memory);
       if (recovered) ctx.ui.notify(`Recovered ${recovered} unanswered inputs into ${name}'s memory. Ask to continue them when ready.`, 'info');
-      const children = new Children(memory, ctx.modelRegistry, () => config.subagent, () => `${instructions(dir)}\n\n${IMPORT_GUIDANCE}`,
+      const children = new Children(memory, ctx.modelRegistry, () => picked('subagent'), () => `${instructions(dir)}\n\n${IMPORT_GUIDANCE}`,
         deliverReport, text => ctx.ui.notify(text, 'error'), dir, { parentSession: sessionId, usage, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports,
-          summarizeHandoff: createHandoffSummarizer(ctx.modelRegistry, () => config.compactor, message => usage.compression(message, 'compactor', sessionId)) });
+          summarizeHandoff: createHandoffSummarizer(ctx.modelRegistry, () => picked('compactor'), message => usage.compression(message, 'compactor', sessionId)) });
       const loggedReports = new Set(memory.root.map(e => e.receipt));
       // Reports a crash held back with their unfinished siblings are delivered now, as they are.
       reports = saved.map(s => typeof s === 'string' ? { text: s } : { text: s.text, count: s.count })
@@ -260,7 +270,8 @@ export default function optchat(pi: ExtensionAPI) {
       if (ctx.mode !== 'print' && ctx.mode !== 'json') closeWindows = await serveWindows(dir, children, () => !stopping && !importing && !pendingImport(dir), deliverReport);
       untitle = children.subscribe(() => showTitle(ctx)); showTitle(ctx);
       status(ctx);
-      ctx.ui.notify(`${brand} · ${name} · ${memory.root.length} messages\nCompactor: ${config.compactor.provider}/${config.compactor.model} (${config.compactor.thinking})`, 'info');
+      const compactor = modelFor('compactor');
+      ctx.ui.notify(`${brand} · ${name} · ${memory.root.length} messages\nCompactor: ${compactor ? `${compactor.provider}/${compactor.model} (${compactor.thinking})` : 'Pi\'s model (pick one in Pi)'}`, 'info');
       const queuedReports = [...reports];
       if (!pendingImport(dir)) {
         const recover = (work: Promise<void>, what: string) => work.catch(error => ctx.ui.notify(`${what}: ${errorText(error)}`, 'error'));
@@ -421,7 +432,7 @@ export default function optchat(pi: ExtensionAPI) {
     const a = required();
     // Pi's own prompt sections (AGENTS.md files, skills, cwd) stay; the profile's instructions go last.
     syncSearch(a.config);
-    event.systemPromptOptions.customPrompt = allowSearch(`${MASTER}\n\n${modelsHint(a.config.subagent)}\n\n${VIEW_DOC}${a.config.previousExchange ? CONTINUITY : ''}${a.config.memorySearch ? SEARCH_DOC : ''}`, a.config.memorySearch);
+    event.systemPromptOptions.customPrompt = allowSearch(`${MASTER}\n\n${modelsHint(roleChoice(a.config, 'subagent'))}\n\n${VIEW_DOC}${a.config.previousExchange ? CONTINUITY : ''}${a.config.memorySearch ? SEARCH_DOC : ''}`, a.config.memorySearch);
     event.systemPromptOptions.sections.instructions = `${instructions(a.dir)}\n\n${IMPORT_GUIDANCE}`;
     refreshContextFiles(event.systemPromptOptions);
     prompt = event.systemPrompt;
@@ -489,7 +500,8 @@ export default function optchat(pi: ExtensionAPI) {
       const current = ctx.getSystemPrompt();
       if (current.startsWith(MASTER.slice(0, 40))) prompt = current;
       // A turn past its budget moves its steps into the view, keeping the task and the last tool call whole (#146).
-      const refresh = refreshPoint(run, keep, refreshBudget(ctx.model?.contextWindow, refreshFraction(a.config.refreshAt)));
+      const budget = refreshBudget(ctx.model?.contextWindow, refreshFraction(a.config.refreshAt));
+      const refresh = refreshPoint(run, keep, budget);
       if (refresh) {
         const { cut, size } = refresh, began = Date.now();
         ctx.ui.setWorkingMessage(`OptChat: moving this turn's ${Math.round(size / 4000)}k tokens into memory…`);
@@ -498,7 +510,7 @@ export default function optchat(pi: ExtensionAPI) {
         ctx.ui.notify(`OptChat moved ${Math.round(size / 4000)}k tokens of this turn into memory (${((Date.now() - began) / 1000).toFixed(1)}s).`, 'info');
       }
       // Built on every call, unlike the view, so it is never out of date; it goes last, after everything cached.
-      return { messages: buildContext(event.messages, refreshedRun(run, keep, TURN_REFRESHED), view, promptFor(prompt, a.config), previous, atWork(a.children.working)) };
+      return { messages: buildContext(event.messages, refreshedRun(run, keep, TURN_REFRESHED, budget), view, promptFor(prompt, a.config), previous, atWork(a.children.working)) };
     } catch (error) {
       // Pi catches extension errors. Explicitly abort so it cannot fall back to old context.
       ctx.abort();
@@ -509,8 +521,12 @@ export default function optchat(pi: ExtensionAPI) {
   });
   pi.on('before_provider_request', (event, ctx) => ctx.model?.api === 'anthropic-messages' ? cachePayload(event.payload) : event.payload);
   pi.on('cache_warming_decision', () => ({ action: 'stop' }));
-  pi.on('session_before_compact', (_event, ctx) => {
-    ctx.ui.notify('OptChat manages history between turns. Pi compaction is disabled; an exceptionally long single run may require stopping and continuing in a new turn.', 'info');
+  pi.on('session_before_compact', (event, ctx) => {
+    // Overflow recovery is not compaction: the provider refused the request, and Pi retries the turn once it compacts. Letting it
+    // through keeps the turn alive when the declared window is wrong (a proxy capping lower); the retried request is rebuilt from
+    // the view and its tail is bounded, so it fits.
+    if (event.reason === 'overflow') return;
+    ctx.ui.notify('OptChat manages history between turns. Pi compaction is disabled.', 'info');
     return { cancel: true };
   });
   const collectUsage = (ctx: ExtensionContext) => {
@@ -593,7 +609,7 @@ export default function optchat(pi: ExtensionAPI) {
     if (!action) {
       const a = active;
       action = await showMenu(ctx, brand, a && { profile: a.name, messages: a.memory.root.length, pending: a.memory.pending,
-        compactor: a.config.compactor, agents: a.config.subagent, error: a.memory.lastError }) ?? '';
+        compactor: roleChoice(a.config, 'compactor'), agents: roleChoice(a.config, 'subagent'), error: a.memory.lastError }) ?? '';
     }
     if (action === 'import') {
       const a = required();
@@ -612,7 +628,8 @@ export default function optchat(pi: ExtensionAPI) {
           }
           if (selected !== 'Resume import') return;
         } else {
-          const plan = await chooseImport(ctx, a.name, a.memory, `${a.config.compactor.provider}/${a.config.compactor.model} (${a.config.compactor.thinking})`, signal);
+          const importModel = roleChoice(a.config, 'compactor');
+          const plan = await chooseImport(ctx, a.name, a.memory, importModel ? `${importModel.provider}/${importModel.model} (${importModel.thinking})` : 'Pi\'s model', signal);
           if (!plan) return;
           signal.throwIfAborted();
           flush(); a.inbox.recover(a.memory); await checkpoints; await a.memory.close(); closed = true;
@@ -621,7 +638,7 @@ export default function optchat(pi: ExtensionAPI) {
           if (!job) return;
         }
         if (!closed) { await a.memory.close(); closed = true; }
-        const compress = createCompressor(ctx.modelRegistry, () => a.config.compactor, message => {
+        const compress = createCompressor(ctx.modelRegistry, () => { const choice = roleChoice(a.config, 'compactor'); if (!choice) throw new Error('No model yet: choose one in Pi (/model) or with /optchat model.'); return choice; }, message => {
           a.usage.compression(message, 'import', ctx.sessionManager.getSessionId());
         }, () => a.config.summaryAcceptBytes);
         const completed = await showProgress(ctx, job, (signal, progress) => runImport(a.dir, compress, signal, a.config.jobs, progress), signal);

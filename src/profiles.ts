@@ -12,13 +12,15 @@ export const isWindows = process.platform === 'win32';
 const PIPE_PREFIX = '\\\\.\\pipe\\';
 
 export const dataHome = () => resolve(process.env.OPTCHAT_HOME ?? join(homedir(), '.optchat'));
-/** `main` is the last model and thinking level picked in Pi while this profile was open; absent until one is picked. */
-export interface ProfileConfig extends Settings { compactor: ModelChoice; subagent: ModelChoice; main?: ModelChoice }
-export const defaults: ProfileConfig = {
-  compactor: { provider: 'anthropic', model: 'claude-sonnet-5-5', thinking: 'medium' },
-  subagent: { provider: 'anthropic', model: 'claude-opus-5-5', thinking: 'high' },
-  ...DEFAULT_SETTINGS,
-};
+/** `main` is the last model and thinking level picked in Pi while this profile was open; absent until one is picked.
+ * A role without its own pick follows `main`, so OptChat runs on the model the user is already using. */
+export interface ProfileConfig extends Settings { compactor?: ModelChoice; subagent?: ModelChoice; main?: ModelChoice }
+/** Roles whose own pick overrides following Pi's model. */
+export type Role = 'compactor' | 'subagent';
+/** What a role runs on: its own pick, else the model Pi is on (as last saved while this profile was open). */
+export const roleChoice = (config: ProfileConfig, role: Role) => config[role] ?? config.main;
+/** Victor's models, sent only when the user pins them; the defaults follow Pi instead. */
+export const defaults: ProfileConfig = { ...DEFAULT_SETTINGS };
 export const THINKING = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 export function profilePath(name: string) {
   if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(name)) throw new Error('Profile names: 1–64 lowercase letters, digits, hyphens, or underscores.');
@@ -49,11 +51,13 @@ function modelChoice(value: unknown): value is ModelChoice {
   return record(value) && typeof value.provider === 'string' && typeof value.model === 'string'
     && THINKING.some(level => level === value.thinking);
 }
+/** An absent choice is valid: that role follows the main model. */
+const optionalChoice = (value: unknown) => value === undefined || modelChoice(value);
 export function loadConfig(dir: string): ProfileConfig {
   const value: unknown = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'));
-  if (!record(value) || !modelChoice(value.compactor) || !modelChoice(value.subagent) || value.main !== undefined && !modelChoice(value.main)) throw new Error(`Invalid profile config: ${dir}/config.json`);
+  if (!record(value) || !optionalChoice(value.compactor) || !optionalChoice(value.subagent) || !optionalChoice(value.main)) throw new Error(`Invalid profile config: ${dir}/config.json`);
   const { compactor, subagent, main } = value;
-  try { return { compactor, subagent, ...main && { main }, ...readSettings(value) }; }
+  try { return { ...compactor && { compactor }, ...subagent && { subagent }, ...main && { main }, ...readSettings(value) }; }
   catch (error) { throw new Error(`Invalid profile config: ${dir}/config.json: ${error instanceof Error ? error.message : String(error)}`); }
 }
 export function instructions(dir: string) { return readFileSync(join(dir, 'AGENTS.md'), 'utf8'); }

@@ -9,6 +9,7 @@ import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager
 import optchat from '../src/index.ts';
 import { createProfile, loadConfig, profilePath, saveConfig } from '../src/profiles.ts';
 import { buildContext, messageChars, refreshBudget, refreshedRun, refreshFraction, refreshPoint, textContent } from '../src/transcript.ts';
+const chars = (messages: readonly AgentMessage[]) => messages.reduce((sum, m) => sum + messageChars(m), 0);
 import { parsePercent } from '../src/settings-page.ts';
 import { invalid } from '../src/settings.ts';
 import { subagentCompaction } from '../src/agents.ts';
@@ -37,13 +38,42 @@ test('the threshold is typed as 30, 30% or 0.3, OPTCHAT_REFRESH_AT overrides it,
   assert.equal(refreshBudget(200_000, refreshFraction(0.3, '0')), undefined);
 });
 
-test('a last step too big to keep under half the budget waits for a smaller one instead of refreshing every call', () => {
+test('a step too big to keep whole is refreshed anyway, its tail cut to the budget', () => {
   const step = (id: string, text: string): AgentMessage[] => [reply([{ type: 'toolCall', id, name: 'read', arguments: {} }], 'toolUse'),
     { role: 'toolResult', toolCallId: id, toolName: 'read', content: [{ type: 'text', text }], isError: false, timestamp: 3 }];
   const run: AgentMessage[] = [{ role: 'user', content: 'task', timestamp: 1 }, ...step('a', 'x'.repeat(600)), ...step('b', 'x'.repeat(600))];
-  assert.equal(refreshPoint(run, 0, 1000), undefined);
-  assert.equal(refreshPoint([...run, ...step('c', 'small')], 0, 1000)?.cut, 5);
+  assert.equal(refreshPoint(run, 0, 1000)?.cut, 3, 'the step is no longer a reason to wait');
+  const sent = chars(refreshedRun(run, 3, TURN_REFRESHED, 1000));
+  assert.ok(sent <= 1000, `the tail is held to the budget (${sent} characters)`);
   assert.equal(messageChars({ role: 'user', content: [{ type: 'text', text: 'hi' }, { type: 'image', data: '', mimeType: 'image/png' }], timestamp: 1 }), 4_802, 'images count as Pi estimates them');
+});
+
+test('many parallel tool results are cut to the same cap instead of overflowing the window', () => {
+  const results = Array.from({ length: 5 }, (_, i): AgentMessage => ({ role: 'toolResult', toolCallId: `t${i}`, toolName: 'bash',
+    content: [{ type: 'text', text: `${i}`.repeat(20_000) }], isError: false, timestamp: 3 }));
+  const run: AgentMessage[] = [{ role: 'user', content: 'task', timestamp: 1 },
+    reply(Array.from({ length: 5 }, (_, i) => ({ type: 'toolCall' as const, id: `t${i}`, name: 'bash', arguments: {} })), 'toolUse'), ...results];
+  const budget = 60_000;
+  assert.equal(refreshPoint(run, 0, budget)?.cut, 1, 'the oversized step still refreshes');
+  const sent = refreshedRun(run, 1, TURN_REFRESHED, budget);
+  assert.ok(chars(sent) <= budget, `sent ${chars(sent)} of a ${budget}-character budget`);
+  const texts = sent.filter(m => m.role === 'toolResult').map(m => textContent(m.content));
+  assert.equal(new Set(texts.map(text => text.length)).size, 1, 'every result keeps the same share, the budget over eight');
+  assert.ok(texts.every(text => text.includes('the view keeps this message as one memory line')), 'each is a pointer to memory');
+  assert.equal(sent.filter(m => m.role === 'assistant').length, 1, 'the step keeps its tool calls, so results still match them');
+  assert.ok(sent.some(m => m.role === 'assistant' && m.content.filter(b => b.type === 'toolCall').length === 5));
+});
+
+test('a message already sent stays byte-identical as the step grows, so the next call reads its cache', () => {
+  const big = (at: number): AgentMessage[] => [reply([{ type: 'toolCall', id: `t${at}`, name: 'bash', arguments: {} }], 'toolUse'),
+    { role: 'toolResult', toolCallId: `t${at}`, toolName: 'bash', content: [{ type: 'text', text: 'x'.repeat(20_000) }], isError: false, timestamp: 3 }];
+  const task: AgentMessage = { role: 'user', content: 'task', timestamp: 1 };
+  const budget = 40_000;
+  const first = refreshedRun([task, ...big(1), ...big(2)], 1, TURN_REFRESHED, budget);
+  const second = refreshedRun([task, ...big(1), ...big(2), ...big(3)], 1, TURN_REFRESHED, budget);
+  assert.deepEqual(second.slice(0, first.length).map(m => JSON.stringify(m)), first.map(m => JSON.stringify(m)),
+    'what the next call sends starts with exactly the bytes of the last call');
+  assert.equal(refreshPoint([task, ...big(1), ...big(2), ...big(3)], 1, budget)?.cut, 5, 'the refresh still advances as the turn grows');
 });
 
 test('subagents use Pi compaction at about the refresh threshold on top of the view, or Pi\'s default when it is off', () => {

@@ -11,10 +11,14 @@ const ROLES: Record<Role, { label: string; description: string; applies: string 
   subagent: { label: 'Subagent model', description: 'Runs every subagent. Shortcut: /optchat agents model.', applies: 'Applies to new subagents.' },
 };
 const modelName = (choice: ModelChoice) => `${choice.provider}/${choice.model}`;
-export const showModel = (choice: ModelChoice) => `${modelName(choice)} · ${choice.thinking}`;
-/** The value column: the model, then whether it is the default (shown short, without its provider). */
-const modelValue = (theme: Theme, role: Role, choice: ModelChoice) => `${showModel(choice)}${theme.fg('dim', showModel(choice) === showModel(defaults[role])
-  ? '  default' : `  default ${defaults[role].model} · ${defaults[role].thinking}`)}`;
+/** A role's model as shown to the user; without its own pick it follows the model Pi is on. */
+export const showModel = (choice: ModelChoice | undefined) => choice ? `${modelName(choice)} · ${choice.thinking}` : 'Pi\'s model (follow)';
+/** The pick that clears a role's own choice, so it follows Pi again. */
+const FOLLOW = 'pi-model';
+/** The value column: the model, then whether it is pinned rather than following Pi. */
+const modelValue = (theme: Theme, choice: ModelChoice | undefined) => choice
+  ? `${showModel(choice)}${theme.fg('dim', '  pinned')}`
+  : theme.fg('accent', showModel(undefined));
 const show = (key: SettingKey, value: number | boolean) => {
   const spec = SETTINGS[key];
   return typeof value === 'boolean' ? value ? 'on' : 'off' : spec.kind === 'percent' ? percent(value) : spec.kind === 'number' && spec.unit ? `${value} ${spec.unit}` : String(value);
@@ -71,21 +75,24 @@ class NumberStep extends Container {
 /** Model first (type to filter), then thinking level; Esc goes back a step. */
 class ModelStep extends Container {
   private active: { handleInput(data: string): void } = { handleInput: () => {} };
-  constructor(private readonly theme: Theme, private readonly role: Role, private readonly models: Options['models'], private readonly current: ModelChoice,
-    private readonly submit: (choice: ModelChoice) => string | undefined, private readonly cancel: () => void) {
+  constructor(private readonly theme: Theme, private readonly role: Role, private readonly models: Options['models'], private readonly current: ModelChoice | undefined,
+    private readonly submit: (choice: ModelChoice | undefined) => string | undefined, private readonly cancel: () => void) {
     super();
     this.pickModel();
   }
   private pickModel() {
     const { theme, current } = this, filter = new Input();
-    const items: SelectItem[] = this.models.map(({ name }) => ({ value: name, label: name, description: name === modelName(current) ? 'current' : undefined }));
+    const items: SelectItem[] = [
+      { value: FOLLOW, label: 'Pi\'s model', description: current ? 'follow the model Pi is on' : 'current: follows the model Pi is on' },
+      ...this.models.map(({ name }) => ({ value: name, label: name, description: name === (current && modelName(current)) ? 'current' : undefined })),
+    ];
     let list = new SelectList(items, 10, listTheme(theme));
     const build = () => {
       list = new SelectList(filter.getValue() ? fuzzyFilter(items, filter.getValue(), i => i.value) : items, 10, listTheme(theme));
       list.onSelect = item => this.pickThinking(item.value); list.onCancel = this.cancel;
       return list;
     };
-    build(); list.setSelectedIndex(Math.max(0, this.models.findIndex(m => m.name === modelName(current))));
+    build(); list.setSelectedIndex(current ? Math.max(1, 1 + this.models.findIndex(m => m.name === modelName(current))) : 0);
     filter.focused = true;
     const box = step(theme, ROLES[this.role].label, `${ROLES[this.role].description} Now ${showModel(current)}.`, filter, 'Type to filter · Enter to choose · Esc to go back', [new Spacer(1), list]);
     this.show(box, data => {
@@ -97,9 +104,14 @@ class ModelStep extends Container {
   }
   private pickThinking(model: string) {
     const { theme, current } = this, error = new Text('', 0, 0);
+    if (model === FOLLOW) {
+      const problem = this.submit(undefined);
+      if (problem) error.setText(theme.fg('error', problem));
+      return;
+    }
     const levels = this.models.find(m => m.name === model)?.thinking ?? THINKING;
     const list = new SelectList(levels.map(value => ({ value, label: value })), levels.length, listTheme(theme));
-    list.setSelectedIndex(Math.max(0, levels.indexOf(current.thinking)));
+    list.setSelectedIndex(Math.max(0, levels.indexOf(current?.thinking ?? 'off')));
     list.onCancel = () => this.pickModel();
     list.onSelect = item => {
       const thinking = levels.find(level => level === item.value);
@@ -141,11 +153,11 @@ export function settingsPage(theme: Theme, o: Options, close: () => void, redraw
   };
   const models = (['compactor', 'subagent'] as const).map((role): SettingItem => {
     const { label, description, applies } = ROLES[role];
-    return { id: role, label, description: `${description} Default ${showModel(defaults[role])}. ${applies}`,
-      currentValue: modelValue(theme, role, config[role]),
+    return { id: role, label, description: `${description} Follows Pi\'s model until you pick one here. ${applies}`,
+      currentValue: modelValue(theme, config[role]),
       submenu: (_value, done) => new ModelStep(theme, role, o.models, config[role], choice => {
         const problem = apply({ [role]: choice }, `${label.toLowerCase()} ${showModel(choice)}`, applies);
-        if (!problem) done(modelValue(theme, role, choice));
+        if (!problem) done(modelValue(theme, choice));
         return problem;
       }, () => done()),
     };
@@ -194,3 +206,4 @@ export function showSettings(ctx: ExtensionContext, o: Options) {
 export function showModelPicker(ctx: ExtensionContext, role: Role, o: Options) {
   return ctx.ui.custom<ModelChoice | undefined>((tui, theme, _keys, done) => modelPicker(theme, role, o, done, () => tui.requestRender()));
 }
+export type { Role };
