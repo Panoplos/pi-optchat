@@ -7,8 +7,8 @@ import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 
 type Role = 'compactor' | 'subagent';
 const ROLES: Record<Role, { label: string; description: string; applies: string }> = {
-  compactor: { label: 'Compactor model', description: 'Writes memory summaries, imports and connected-window handoffs. Shortcut: /optchat model.', applies: 'Applies to the next summary.' },
-  subagent: { label: 'Subagent model', description: 'Runs every subagent. Shortcut: /optchat agents model.', applies: 'Applies to subagents started after this.' },
+  compactor: { label: 'Compactor model', description: 'Writes memory summaries, imports and fallback handoffs. Shortcut: /optchat model.', applies: 'Applies to the next summary.' },
+  subagent: { label: 'Subagent model', description: 'Runs every subagent. Shortcut: /optchat agents model.', applies: 'Applies to new subagents.' },
 };
 const modelName = (choice: ModelChoice) => `${choice.provider}/${choice.model}`;
 export const showModel = (choice: ModelChoice) => `${modelName(choice)} · ${choice.thinking}`;
