@@ -74,9 +74,17 @@ export function createCompressor({ model: resolve, retryable, onUsage = () => {}
   const gate = primeFirst();
   return async (input, signal) => {
     const { model, reasoning: thinking, stream: streamSimple } = resolve();
-    const step = `${input.historical ? IMPORT_GUIDANCE + '\n\n' : ''}${compaction(input)}`;
-    // OpenAI joins text blocks with nothing between them, so the task starts its own paragraph after the view.
-    const messages: Message[] = [{ role: 'user', content: [{ type: 'text', text: input.context }, { type: 'text', text: `\n\n${step}` }], timestamp: Date.now() }];
+    // A model without image input gets none, and a short message it can't see more of stays its own line, word for word.
+    const short = bytes(input.source) <= NODE;
+    let images = model.input.includes('image') ? input.images : [];
+    if (short && !images.length) return input.source;
+    // The images go after the task, so the view stays the cached prefix its sibling compactions share; each follows its name.
+    const task = (): Message => ({ role: 'user', timestamp: Date.now(), content: [
+      // OpenAI joins text blocks with nothing between them, so the task starts its own paragraph after the view.
+      { type: 'text', text: input.context },
+      { type: 'text', text: `\n\n${input.historical ? IMPORT_GUIDANCE + '\n\n' : ''}${compaction({ ...input, images })}` },
+      ...images.flatMap(({ name, image }) => [{ type: 'text' as const, text: `\n[image ${name}]` }, image])] });
+    let messages: Message[] = [task()];
     const view = splitView(input.context);
     const prefix = model.api === 'anthropic-messages' && view.length > 1 ? `${model.provider}/${model.id}/${thinking ?? 'off'}\n${view.slice(0, -1).join('')}` : undefined;
     const tries: string[] = [];
@@ -97,19 +105,26 @@ export function createCompressor({ model: resolve, retryable, onUsage = () => {}
     const answer = () => retryTransient(ask, onUsage, retryable, retryDelays, signal);
     for (let attempt = 0; attempt < 5; attempt++) {
       const reply = await answer();
+      // Any error the retry rule doesn't cover, with images sent: the images (too big, too many), which every retry would send again,
+      // or not (a bad key, no quota, a dropped connection). Asked once more by name only, the second kind fails again below and the
+      // summary is tried again later, images and all. It is not one of the 5 tries, so a fifth reply can't end the loop without it.
+      if (images.length && reply.stopReason === 'error' && !retryable(reply)) { images = []; messages = [task()]; attempt--; continue; }
       // A stop reason means the model answered: a refusal or a content filter, which asking again repeats.
       // A provider's own 'error' stop (Mistral) is a failure on its side, not an answer: a plain error, tried again later.
       if (reply.stopReason === 'error' && reply.rawStopReason !== undefined && reply.rawStopReason !== 'error' && !retryable(reply))
         throw new Refused(reply.errorMessage ?? `Compactor stopped: ${reply.rawStopReason}`);
       if (reply.stopReason === 'error' || reply.stopReason === 'aborted') throw new Error(reply.errorMessage ?? `Compactor ${reply.stopReason}`);
+      // Answered by name only, so the images were the error: a short message has nothing more to say than its names.
+      if (short && !images.length) return input.source;
       // A reply cut off at the token limit, or one that calls a tool, is no summary: ask again.
       if (reply.stopReason === 'length' || reply.content.some(c => c.type === 'toolCall')) continue;
       // The compactions' view shows each line under its id+n| head, which a line can copy.
       const line = reply.content.filter(c => c.type === 'text').map(c => c.text).join('').trim().replace(/^\d+\+\d+\|\s*/, '');
       if (!line) throw new Refused('Compactor returned no text.');
       tries.push(line);
-      // A merge of two short lines can come back nearly as big as both, so a line must also shrink what it replaces.
-      if (bytes(line) <= accepted() && bytes(line) < bytes(input.source)) break;
+      // A merge of two short lines can come back nearly as big as both, so a line must also shrink what it replaces; a line that
+      // says what images show may be longer than the names it replaces.
+      if (bytes(line) <= accepted() && (images.length > 0 || bytes(line) < bytes(input.source))) break;
       messages.push(reply);
       messages.push({ role: 'user', content: tooLong(bytes(line), cut(line)), timestamp: Date.now() });
     }
