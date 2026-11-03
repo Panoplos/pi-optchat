@@ -1,6 +1,6 @@
 import type { ImageContent, Message, TextContent, UserMessage } from '@earendil-works/pi-ai';
 import { CAP, cap, type Kind, type Memory } from './memory.ts';
-import { isImage } from './images.ts';
+import { isImage, refName } from './images.ts';
 
 /** A turn's messages as core reads them: pi-ai's, plus a host's own (Pi's custom messages), which pass through untouched. */
 export type AnyMessage = Message | { role: string; timestamp: number; content?: string | (TextContent | ImageContent)[] };
@@ -52,12 +52,14 @@ export function childInput({ view, previous = [], run = [], task }: { view: stri
   };
   return `${[view, ...part('The exchange before this run', previous), ...part('This run so far', run)].join('\n\n')}${TASK_HEADER}${task}`;
 }
-/** A tool result over CAP keeps its head and tail, and its images. */
+/** A text block that is only an image's ref, which a host may send in the image's place until the request is built (durable). */
+const isRef = (block: TextContent | ImageContent) => block.type === 'text' && refName(block.text) !== undefined;
+/** A tool result over CAP keeps its head and tail, and its images and their refs. */
 export function boundedMessage<M extends AnyMessage>(message: M): M {
   if (!is(message, 'toolResult')) return message;
-  const text = message.content.filter(c => c.type === 'text').map(c => c.text).join('\n');
+  const text = message.content.flatMap(c => c.type === 'text' && !isRef(c) ? [c.text] : []).join('\n');
   if (text.length <= CAP) return message;
-  return { ...message, content: [{ type: 'text', text: cap(text) }, ...message.content.filter(c => c.type === 'image')] };
+  return { ...message, content: [{ type: 'text', text: cap(text) }, ...message.content.filter(c => c.type === 'image' || isRef(c))] };
 }
 /** The view goes before the first user message's words, in that message, so everything up to them is one cached prefix. */
 export function withView<M extends AnyMessage>(messages: readonly M[], view: string): (M | UserMessage)[] {
@@ -87,11 +89,12 @@ export function completedExchange(history: readonly AnyMessage[], imageRef?: Ima
 
 /** Pi's own estimate for an image when it decides to compact: 4,800 characters, about 1,200 tokens. */
 const IMAGE_CHARS = 4_800;
-/** Characters a message adds to a request: its text, thinking, tool-call arguments and images, as Pi estimates them. Framing is left out. */
+/** Characters a message adds to a request: its text, thinking, tool-call arguments and images (an image's ref too), as Pi estimates
+ * them. Framing is left out. */
 export function messageChars({ content = [] }: AnyMessage) {
   if (typeof content === 'string') return content.length;
   let sum = 0;
-  for (const block of content) sum += block.type === 'text' ? block.text.length : block.type === 'thinking' ? block.thinking.length
+  for (const block of content) sum += block.type === 'text' ? refName(block.text) === undefined ? block.text.length : IMAGE_CHARS : block.type === 'thinking' ? block.thinking.length
     : block.type === 'toolCall' ? JSON.stringify(block.arguments).length : block.type === 'image' ? IMAGE_CHARS : 0;
   return sum;
 }

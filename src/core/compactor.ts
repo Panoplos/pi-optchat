@@ -2,6 +2,7 @@ import type { Api, AssistantMessage, Message, Model, Models, SimpleStreamOptions
 import { COMPACT, compaction, IMPORT_GUIDANCE, tooLong } from './prompts.ts';
 import { bytes, cut, NODE, Refused, type Compressor } from './memory.ts';
 import { cachePayload, splitView } from './cache.ts';
+import { ref } from './images.ts';
 
 /** The longest line kept without asking again, unless the host sets its own (Pi's "Summary size tolerance"). */
 export const ACCEPTED_BYTES = NODE * 1.25;
@@ -83,7 +84,7 @@ export function createCompressor({ model: resolve, retryable, onUsage = () => {}
       // OpenAI joins text blocks with nothing between them, so the task starts its own paragraph after the view.
       { type: 'text', text: input.context },
       { type: 'text', text: `\n\n${input.historical ? IMPORT_GUIDANCE + '\n\n' : ''}${compaction({ ...input, images })}` },
-      ...images.flatMap(({ name, image }) => [{ type: 'text' as const, text: `\n[image ${name}]` }, image])] });
+      ...images.flatMap(({ name, image }) => [{ type: 'text' as const, text: `\n${ref(name)}` }, image])] });
     let messages: Message[] = [task()];
     const view = splitView(input.context);
     const prefix = model.api === 'anthropic-messages' && view.length > 1 ? `${model.provider}/${model.id}/${thinking ?? 'off'}\n${view.slice(0, -1).join('')}` : undefined;
