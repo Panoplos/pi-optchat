@@ -8,6 +8,12 @@ const MIMES = new Map<string, Mime>((Object.keys(EXTENSIONS) as Mime[]).map(mime
 /** The one place a profile's store is chosen. A `store` setting will plug in here; until then every profile keeps its memory in files. */
 export const storeFor = (directory: string, warn: (s: string) => void = console.error): Store => new FileStore(directory, warn);
 
+/** Pi's imports before #201 started each message's text with a "[Historical …]" line; its `[IMP <day>]` head says that now, so
+ * loading drops it. Only the two shapes Pi wrote match, `<source> · <ISO time> · conversation <id> · <title>` and (from #64)
+ * `<source> · <YYYY-MM-DD HH:MM>Z · <13 characters of the id> · <title>`, so a message that itself starts "[Historical" keeps it.
+ * A Claude Code memory note's line names the memory, and its source isn't one word, so it stays. */
+export const LEGACY_HEADER = /^\[Historical [a-z]+ · \d{4}-\d{2}-\d{2}(?:T[\d:.]+Z · conversation \S+| \d{2}:\d{2}Z · \S+) · [\s\S]*?\]\n/;
+
 export function localDay(date = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
@@ -75,7 +81,7 @@ export class FileStore implements Store {
     // Memory checks the rest; a record without its text is as broken here as before.
     if (!entries.every(isEntry)) throw new Error('Invalid/noncontiguous OptChat log; refusing to change it.');
     if (!tree.every(isSummary)) throw new Error('Invalid OptChat summary record.');
-    for (const { i, text } of entries) this.texts[i] = text;
+    for (const { i, text, origin } of entries) this.texts[i] = origin ? text.replace(LEGACY_HEADER, '') : text;
     for (const { l, i, text } of tree) this.summaries.set(`${l}:${i}`, text);
     return { entries, tree, view: saved };
   }

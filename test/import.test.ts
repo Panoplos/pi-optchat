@@ -13,7 +13,7 @@ import { bytes, openMemory, type Compressor, type Entry, type Summary } from '..
 import type { Store } from '../src/core/store.ts';
 import type { Memory as CoreMemory } from '../src/core/memory.ts';
 import { localDay } from '../src/store.ts';
-import { scanLocal, scanChatGPT, scanClaudeMemories, readConversation, timestamp, type Conversation, type ImportedEntry } from '../src/import/sources.ts';
+import { withNotes, scanLocal, scanChatGPT, scanClaudeMemories, readConversation, timestamp, type Conversation, type ImportedEntry } from '../src/import/sources.ts';
 import { prepareImport, runImport, memoryDirectory, pendingImport, discardImport, deduplicate } from '../src/import/job.ts';
 import { chronological, planImport, runImport as runCore } from '../src/core/import.ts';
 import { chooseImport, showProgress } from '../src/import/ui.ts';
@@ -70,7 +70,7 @@ test('Claude slash and shell commands stay as typed, with or without arguments, 
   ]);
   try {
     const parsed = await readConversation(conversation('claude', file));
-    assert.deepEqual(parsed.entries.map(e => e.text.slice(e.text.indexOf(']\n') + 2)), ['/compact', '!git status', '/oreo-mode ship the parser fix', 'shipped', 'what is next?', 'the docs']);
+    assert.deepEqual(parsed.entries.map(e => e.text), ['/compact', '!git status', '/oreo-mode ship the parser fix', 'shipped', 'what is next?', 'the docs']);
     assert.doesNotMatch(JSON.stringify(parsed.entries), /command-|bash-|Compacted|Unknown command|On branch/);
     assert.equal(parsed.entries[2].receipt, `import:${createHash('sha256').update(JSON.stringify(['claude', 'conversation-1', 'skill', 'user', raw])).digest('hex')}`, 'the receipt still hashes the raw text');
     const scan = await scanLocal('claude', [dir]);
@@ -107,7 +107,6 @@ test('Codex imports user messages and final answers once, excluding commentary, 
 
 const codexFixture = fileURLToPath(new URL('./fixtures/codex-rollout.jsonl', import.meta.url));
 const receipt = (...identity: unknown[]) => `import:${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`;
-const body = (e: ImportedEntry) => e.text.slice(e.text.indexOf(']\n') + 2);
 
 test('Codex titles and entries skip the context Codex injects, and keep what the user typed, even in Codex\'s tag shapes', async () => {
   const dir = temp();
@@ -119,7 +118,7 @@ test('Codex titles and entries skip the context Codex injects, and keep what the
     assert.deepEqual({ id: c.id, project: c.project, title: c.title, date: c.date },
       { id: '0199c0de-1111-7222-8333-444455556666', project: '/home/dev/synthetic-app', title: 'Add a --dry-run flag to the sync command.', date: '2026-03-04T09:00:02.000Z' });
     const parsed = await readConversation(c);
-    assert.deepEqual(parsed.entries.map(e => [e.kind, e.origin?.message, body(e)]), [
+    assert.deepEqual(parsed.entries.map(e => [e.kind, e.origin?.message, e.text]), [
       ['user', 'msg-1', 'Add a --dry-run flag to the sync command.'],
       ['talk', 'msg-2', 'Added --dry-run to sync.'],
       ['user', 'msg-3', 'Now document the flag in the README.'],
@@ -180,7 +179,7 @@ test('a current Claude Code transcript drops interrupt markers with their cut-of
   const parsed = await readConversation(conversation('claude', claudeFixture));
   assert.deepEqual(parsed.entries.map(e => [e.kind, e.origin?.message]),
     [['user', 'u1'], ['user', 'u2'], ['user', 'q1'], ['user', 'u3'], ['user', 'q4'], ['talk', 'a6:0'], ['user', 'u4'], ['user', 'u5'], ['talk', 'a8:0']]);
-  assert.deepEqual(parsed.entries.filter(e => e.kind === 'user').map(e => e.text.slice(e.text.indexOf(']\n') + 2)),
+  assert.deepEqual(parsed.entries.filter(e => e.kind === 'user').map(e => e.text),
     ['Write the deploy plan for the sync service.', 'Shorter, three steps.', 'Also skip the staging step.', 'Go on without deploying.', 'And log each step.', 'Now write the changelog.', 'Mention the API change.']);
   assert.equal(parsed.entries[2].date, '2026-03-04T09:00:07.000Z');
   assert.doesNotMatch(JSON.stringify(parsed.entries), /Request interrupted|step 1 of 12|task-notification|teammate-message/);
@@ -264,7 +263,7 @@ test('Pi / OMP imports what the user typed and the replies that ended a turn, an
   lines(file, rows);
   try {
     const parsed = await readConversation(conversation('pi', file));
-    assert.deepEqual(parsed.entries.map(e => [e.kind, body(e)]), [
+    assert.deepEqual(parsed.entries.map(e => [e.kind, e.text]), [
       ['user', 'exact user question'], ['talk', 'final answer'],
       ['user', '[alternate branch]\n!git status'], ['user', '[alternate branch]\n$print(1)'],
       ['user', '[alternate branch]\n/skill:grill-me one question at a time'], ['user', '[alternate branch]\nfirst read this, then /skill:grill-me the plan'],
@@ -274,7 +273,6 @@ test('Pi / OMP imports what the user typed and the replies that ended a turn, an
     assert.doesNotMatch(JSON.stringify(parsed.entries),
       /SECRET|intermediate|TOOL OUTPUT|TEXT BEFORE|REMINDER|NUDGE|SYNTHETIC|MENTIONED|BACKGROUND|OUTPUT|SKILL BODY|ABORTED|FAILED|COMPACTION|RENAMED/);
     assert.deepEqual(parsed.warnings, []);
-    assert.equal(parsed.entries[0].text.split('\n')[0], `[Historical pi · 2026-01-02 12:00Z · conversation- · Fixture]`);
   } finally { removeDir(dir); }
 });
 
@@ -286,7 +284,7 @@ test('a Pi / OMP fork adds only its new messages, though it copies the earlier o
   try {
     const read = async (file: string, id: string) => (await readConversation({ ...conversation('pi', file), id })).entries;
     const { added, skipped } = deduplicate([], [...await read(original, 'original'), ...await read(fork, 'fork')]);
-    assert.deepEqual(added.map(body), ['first question', 'first answer', 'question on the fork']);
+    assert.deepEqual(added.map(e => e.text), ['first question', 'first answer', 'question on the fork']);
     assert.equal(skipped, 2);
   } finally { removeDir(dir); }
 });
@@ -377,14 +375,16 @@ test('a resumed Claude session adds only its new messages, also over entries an 
   lines(join(dir, 'aaaa.jsonl'), copied('aaaa'));
   lines(join(dir, 'bbbb.jsonl'), [...copied('bbbb'), user('u3', 'bbbb', 'q3', 4), reply('a3', 'bbbb', 'r3', 5), user('u2', 'bbbb', 'q2 edited', 6)]);
   const read = async (id: string) => (await readConversation({ ...conversation('claude', join(dir, `${id}.jsonl`)), id })).entries;
-  const body = (e: ImportedEntry) => e.text.slice(e.text.indexOf('\n') + 1);
+  let memory = new Memory(join(dir, 'profile'), short);
+  const text = (e: ImportedEntry) => e.text;
   try {
     const [a, b] = [await read('aaaa'), await read('bbbb')];
-    assert.deepEqual(deduplicate([], [...a, ...b]).added.map(body), ['/model opus', 'q2', 'r2', 'q3', 'r3', 'q2 edited']);
-    // An older import stored the original with a longer header and the command as Claude Code logged it.
-    const stored = a.map((e, i) => ({ ...e, i, size: 0, text: `[Historical claude · ${e.date} · conversation aaaa · Fixture]\n${body(e) === '/model opus' ? model : body(e)}` }));
-    assert.deepEqual(deduplicate(stored, b).added.map(body), ['q3', 'r3', 'q2 edited'], 'a uuid with other text is another message');
-  } finally { removeDir(dir); }
+    assert.deepEqual(deduplicate([], [...a, ...b]).added.map(text), ['/model opus', 'q2', 'r2', 'q3', 'r3', 'q2 edited']);
+    // An older import stored the original under a "[Historical …]" header and the command as Claude Code logged it; loading drops the header.
+    for (const e of a) memory.append(e.kind, `[Historical claude · ${e.date} · conversation aaaa · Fixture]\n${e.text === '/model opus' ? model : e.text}`, e.date, e.receipt, e.origin);
+    await memory.close(); memory = new Memory(join(dir, 'profile'), short);
+    assert.deepEqual(deduplicate(memory.entries(), b).added.map(text), ['q3', 'r3', 'q2 edited'], 'a uuid with other text is another message');
+  } finally { await memory.close(); removeDir(dir); }
 });
 
 test('Claude discovery checks late sidechain markers without extending metadata extraction or Codex scanning', async () => {
@@ -523,7 +523,7 @@ test('Claude memories import each topic file once as a dated note, and an edited
       ['note', '2026-03-04T05:06:07.000Z', '/tmp/alpha', 'Deploys'],
       ['note', date, '-work-beta', 'PR status'],
     ]);
-    assert.equal(first[0].text, '[Historical Claude Code memory · 2026-03-04 05:06Z · project /tmp/alpha · type feedback · Deploys]\nNever deploy on "Fridays"\n\nWait until Monday.');
+    assert.equal(first[0].text, '[Claude Code memory · project /tmp/alpha · type feedback · Deploys]\nNever deploy on "Fridays"\n\nWait until Monday.');
     assert.match(first[1].text, /project -work-beta · type project · PR status\]\nTracking PR\n\nPR #7023 is open\.$/);
     assert.doesNotMatch(JSON.stringify(first), /INDEX ONLY|SESSION SUMMARY/);
     const existing = first.map((e, i) => ({ ...e, i, size: 0 }));
@@ -698,17 +698,33 @@ test('preparation source dialog receives shutdown cancellation before staging an
   } finally { await memory.close(); removeDir(dir); }
 });
 
-test('an imported message header names the source, the minute, 13 characters of the conversation id and the title, and the full id stays in the origin', async () => {
+test('an imported message is its text alone; its conversation note names the source, title, project, days and 13 characters of the id', async () => {
   const dir = temp(), claude = join(dir, 'claude.jsonl'), codex = join(dir, 'codex.jsonl');
   lines(claude, [{ type: 'user', uuid: 'u', timestamp: date, message: { role: 'user', content: 'question' } }]);
   lines(codex, [{ type: 'response_item', timestamp: date, payload: { type: 'message', id: 'u', role: 'user', content: [{ type: 'input_text', text: 'question' }] } }]);
   try {
     for (const [source, file, id] of [['claude', claude, 'cbcb64a5-871a-4179-a897-e3683852d011'], ['codex', codex, '0199c0de-1111-7222-8333-444455556666']] as const) {
-      const [entry] = (await readConversation({ ...conversation(source, file), id })).entries;
-      assert.equal(entry.text.split('\n')[0], `[Historical ${source} · 2026-01-02 12:00Z · ${id.slice(0, 13)} · Fixture]`);
-      assert.equal(entry.origin?.conversation, id);
+      const c = { ...conversation(source, file), id }, { entries } = await readConversation(c);
+      assert.deepEqual(entries.map(e => [e.text, e.origin?.conversation]), [['question', id]]);
+      const [note] = withNotes([{ ...entries[0], date: '2026-01-05T09:00:00.000Z' }, entries[0]]);
+      assert.deepEqual([note.kind, note.date, note.text], ['note', date, `Imported ${source} conversation "Fixture" in /synthetic, 2026-01-02 to 2026-01-05, id ${id.slice(0, 13)}.`]);
     }
   } finally { removeDir(dir); }
+});
+
+test('re-importing a conversation adds nothing, and a later message comes with one note', async () => {
+  const dir = temp(), file = join(dir, 'claude.jsonl'), memory = new Memory(join(dir, 'profile'), short);
+  const user = (uuid: string, content: string) => ({ type: 'user', uuid, timestamp: date, message: { role: 'user', content } });
+  const fresh = async () => withNotes(deduplicate(memory.entries(), (await readConversation(conversation('claude', file))).entries).added);
+  try {
+    lines(file, [user('u1', 'first'), user('u2', 'second')]);
+    const first = await fresh();
+    assert.deepEqual(first.map(e => e.kind === 'note' ? 'note' : e.text), ['note', 'first', 'second']);
+    for (const e of first) memory.append(e.kind, e.text, e.date, e.receipt, e.origin);
+    assert.deepEqual(await fresh(), []);
+    lines(file, [user('u1', 'first'), user('u2', 'second'), user('u3', 'third')]);
+    assert.deepEqual((await fresh()).map(e => e.kind === 'note' ? 'note' : e.text), ['note', 'third']);
+  } finally { await memory.close(); removeDir(dir); }
 });
 
 test('a time without a zone is UTC whatever the machine zone', () => {

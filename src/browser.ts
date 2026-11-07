@@ -87,8 +87,6 @@ function when(a, b) {
   return x.toDateString() === y.toDateString() ? day(x) + ', ' + time(x) + '–' + time(y) : day(x) + ' ' + time(x) + ' – ' + day(y) + ' ' + time(y);
 }
 const SOURCE = D.sources;
-// Imported text starts with a "[Historical …]" line for the model; the meta line already says it.
-const body = e => { const j = e.origin && e.text.startsWith('[Historical ') ? e.text.indexOf(']\n') : -1; return j < 0 ? e.text : e.text.slice(j + 2); };
 const short = (s, n) => { s = s.replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
 function who(e) {
   // Logs from before the work kind held reports as user messages starting "[id] "; another extension's shown custom message is tagged the same way.
@@ -111,7 +109,7 @@ function head(e) {
   return h;
 }
 function message(e) {
-  const text = body(e), el = $('div', 'msg ' + who(e)[1]), t = $('div', 'text clamp', text);
+  const text = e.text, el = $('div', 'msg ' + who(e)[1]), t = $('div', 'text clamp', text);
   el.dataset.k = '0:' + e.i; el.append(head(e), t);
   if (text.length > 600 || text.split('\n').length > 7) {
     const b = $('button', 'link', 'Show all');
@@ -191,7 +189,7 @@ else {
 }
 
 const q = document.getElementById('q'), hits = document.getElementById('hits'), counter = document.getElementById('count');
-const lower = D.root.map(e => body(e).toLowerCase());
+const lower = D.root.map(e => e.text.toLowerCase());
 function snippet(text, j, len) {
   const a = Math.max(0, j - 140), b = Math.min(text.length, j + len + 220), el = $('div', 'text');
   el.append((a ? '…' : '') + text.slice(a, j), $('mark', null, text.slice(j, j + len)), text.slice(j + len, b) + (b < text.length ? '…' : ''));
@@ -230,7 +228,7 @@ function find() {
   counter.textContent = found.length ? found.length.toLocaleString() + (found.length === 1 ? ' message' : ' messages') + ', newest first' + (found.length > 100 ? ' (showing 100)' : '') : 'No messages match.';
   for (const [i, j] of found.slice(0, 100)) {
     const e = D.root[i], el = $('div', 'msg ' + who(e)[1]);
-    el.append(head(e), snippet(body(e), j, s.length), path(i));
+    el.append(head(e), snippet(e.text, j, s.length), path(i));
     hits.append(el);
   }
 }

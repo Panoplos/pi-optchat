@@ -1,5 +1,5 @@
 import { Type, type Static } from 'typebox';
-import { flat, PAGE, start, type Memory } from './memory.ts';
+import { flat, head, PAGE, start, type Memory } from './memory.ts';
 import { loadImages } from './images.ts';
 export const result = (text: string) => ({ content: [{ type: 'text' as const, text }], details: {} });
 export const SEARCH_PAGE = 20;
@@ -16,7 +16,7 @@ export function searchPage(memory: Memory, text: string, before?: number) {
     const snippet = flat(text.slice(at, at + SNIPPET).replace(/^[\udc00-\udfff]|[\ud800-\udbff]$/g, ''));
     // The live view, which may have folded since the turn's snapshot: its lines are built, so zoom always opens them.
     const line = memory.covering(entry.i); // Named only when the hit is inside a summary line.
-    return `${entry.i}${line?.l ? ` (in ${start(line)}+${2 ** line.l})` : ''} · ${new Date(entry.date).toString().slice(0, 21)} · ${entry.kind}: ${at ? '…' : ''}${snippet}${at + SNIPPET < text.length ? '…' : ''}`;
+    return `${entry.i}${line?.l ? ` (in ${start(line)}+${2 ** line.l})` : ''} · ${new Date(entry.date).toString().slice(0, 21)} · ${head(entry)}: ${at ? '…' : ''}${snippet}${at + SNIPPET < text.length ? '…' : ''}`;
   });
   const more = hits.length > page.length ? `\nOlder matches: search again with before: ${page[page.length - 1].i}.` : '';
   return `${hits.length} ${older}${hits.length === 1 ? 'message contains' : 'messages contain'} "${text}", newest first:\n${lines.join('\n')}${more}`;

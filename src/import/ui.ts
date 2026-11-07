@@ -1,7 +1,7 @@
 import type { ExtensionUIContext } from '@earendil-works/pi-coding-agent';
 import type { Memory } from '../memory.ts';
 import { bytes } from '../core/memory.ts';
-import { scanLocal, scanChatGPT, scanClaudeMemories, readConversation, type Conversation, type ImportedEntry, type Source } from './sources.ts';
+import { withNotes, scanLocal, scanChatGPT, scanClaudeMemories, readConversation, type Conversation, type ImportedEntry, type Source } from './sources.ts';
 import { deduplicate, type ImportMode, type ImportJob, type ImportProgress } from './job.ts';
 import { selectMany } from './multi-select.ts';
 import { homedir } from 'node:os';
@@ -66,23 +66,25 @@ export async function chooseImport(ctx: ImportUI, profile: string, memory: Memor
   if (!entries.length) { ctx.ui.notify('No readable messages remain to import. Rescan or choose different conversations.', 'info'); return; }
   const existing = memory.entries(), { added, skipped } = deduplicate(existing, entries);
   if (!added.length) { ctx.ui.notify(`Nothing new to import (${skipped} messages already present).`, 'info'); return; }
+  // What gets staged, notes included, so the estimates below count them too.
+  const staged = withNotes(added);
   let mode: ImportMode = 'append';
   if (memory.root.length) {
     const selected = await ctx.ui.select('How should this history join your memory?', [
       `Append · keep ${memory.tree.size} existing summaries`,
-      `Rebuild by conversation start date · recompress ${memory.root.length + added.length} messages`,
+      `Rebuild by conversation start date · recompress ${memory.root.length + staged.length} messages`,
     ], { signal });
     if (!selected) return;
     mode = selected.startsWith('Rebuild') ? 'rebuild' : 'append';
   }
-  const affected = mode === 'rebuild' ? [...existing, ...added] : added;
+  const affected = mode === 'rebuild' ? [...existing, ...staged] : staged;
   const inputBytes = affected.reduce((n, e) => n + bytes(e.text), 0);
   let nodes = 0;
-  for (let n = memory.root.length + added.length; n > 0; n = Math.floor(n / 2)) nodes += n;
+  for (let n = memory.root.length + staged.length; n > 0; n = Math.floor(n / 2)) nodes += n;
   if (mode === 'append') nodes -= memory.tree.size;
-  const preview = `${profile} · ${mode}\n${source === 'claude-memory' ? 'Each memory file as one dated historical note; MEMORY.md indexes excluded.' : 'Historical user messages and final replies; tool activity excluded.'}\n${conversations.length} ${unit} selected · ${added.length} new ${source === 'claude-memory' ? 'notes' : 'messages'} · ${skipped} duplicates skipped\n${size(inputBytes)} text to index (~${Math.ceil(inputBytes / 4).toLocaleString()} source tokens; rough estimate)\nCompactor: ${model}\nUp to ${nodes} new summary nodes; small nodes need no model call. A big import costs about 3x the source tokens in compactor input, plus cached context and retries.\nChatting in this profile pauses until completion or discard. You can pause and resume compression. The previous memory is retained.`;
+  const preview = `${profile} · ${mode}\n${source === 'claude-memory' ? 'Each memory file as one note, marked [IMP <day>]; MEMORY.md indexes excluded.' : 'User messages and final replies, marked [IMP <day>], one note per conversation; tool activity excluded.'}\n${conversations.length} ${unit} selected · ${added.length} new ${source === 'claude-memory' ? 'notes' : 'messages'} · ${skipped} duplicates skipped\n${size(inputBytes)} text to index (~${Math.ceil(inputBytes / 4).toLocaleString()} source tokens; rough estimate)\nCompactor: ${model}\nUp to ${nodes} new summary nodes; small nodes need no model call. A big import costs about 3x the source tokens in compactor input, plus cached context and retries.\nChatting in this profile pauses until completion or discard. You can pause and resume compression. The previous memory is retained.`;
   if (!await ctx.ui.confirm('Start import?', preview, { signal })) return;
-  return { entries, mode };
+  return { entries: staged, mode };
 }
 export async function showProgress(ctx: { ui: Pick<ExtensionUIContext, 'select' | 'setWidget'> }, job: ImportJob,
   run: (signal: AbortSignal, progress: (value: ImportProgress) => void) => Promise<unknown>, outerSignal: AbortSignal) {

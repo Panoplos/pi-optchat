@@ -165,7 +165,7 @@ Pick the destination profile, then run `/optchat import`.
 3. **Mode** (only if the profile already has history): **Append** keeps existing summaries and adds the import (faster, cheaper); **Rebuild by conversation start date** regenerates the whole tree.
 4. **Preview**: destination, new and duplicate counts, text size, rough token estimate, and compactor. A big import costs about 3x that estimate in compactor input.
 
-- Only user messages and final assistant replies come in, with original dates and source labels, marked as historical so old requests are not treated as new instructions. Tool calls, reasoning and file bytes are left out.
+- Only user messages and final assistant replies come in, with original dates, one note per conversation, marked `[IMP <day>]` so old requests are not treated as new instructions. Tool calls, reasoning and file bytes are left out.
 - Re-importing skips messages already present.
 - **Pause import** (or Escape, or restarting Pi) saves progress; `/optchat import` then offers **Resume** or **Discard staged import**. Chat in that profile is blocked while an import is pending.
 - Imports switch to the new memory only when the whole tree is ready; the previous one stays on disk. Source files are never modified.
