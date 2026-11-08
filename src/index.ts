@@ -130,6 +130,14 @@ export default function optchat(pi: ExtensionAPI) {
   let restoring = false, restored: ModelChoice | undefined;
   const sameChoice = (a: ModelChoice | undefined, b: ModelChoice) => a?.provider === b.provider && a.model === b.model && a.thinking === b.thinking;
   const mainChoice = ({ model }: ExtensionContext): ModelChoice | undefined => model && { provider: model.provider, model: model.id, thinking: pi.getThinkingLevel() };
+  /** This turn's refresh threshold, in characters, for Pi's effective window: a per-model `maxContext` set in /context caps the
+   * model spec, so the budget and the figure the footer shows move with the number you set there. Pi reports it before the token count. */
+  const budgetFor = (ctx: ExtensionContext, a: Active) =>
+    refreshBudget(ctx.getContextUsage()?.contextWindow ?? ctx.model?.contextWindow, refreshFraction(a.config.refreshAt));
+  /** Before a turn has a tail, the footer shows the threshold the turn is held to instead of Pi's raw window. */
+  const showBudget = (ctx: ExtensionContext) => {
+    if (active) usageSlot(ctx.ui).setContextUsage?.(turnUsage([], 0, budgetFor(ctx, active)));
+  };
   const rememberMain = (ctx: ExtensionContext) => {
     // Read Pi's state, not the event: a model switch reports its thinking level before the model, and a late handler sees where both ended up.
     const a = active, main = mainChoice(ctx);
@@ -139,7 +147,7 @@ export default function optchat(pi: ExtensionAPI) {
     try { saveConfig(a.dir, { ...a.config, main }); a.config.main = main; }
     catch (error) { ctx.ui.notify(`Could not save the main model to ${a.name}: ${errorText(error)}`, 'error'); }
   };
-  pi.on('model_select', (_event, ctx) => rememberMain(ctx));
+  pi.on('model_select', (_event, ctx) => { rememberMain(ctx); showBudget(ctx); });
   pi.on('thinking_level_select', (_event, ctx) => rememberMain(ctx));
   const restoreMain = async (ctx: ExtensionContext, active: Active) => {
     const { name, config: { main } } = active;
@@ -299,6 +307,7 @@ export default function optchat(pi: ExtensionAPI) {
       rememberProfile(name);
       active = { name, session: sessionId, dir, config, memory, inbox, children, usage, unlock }; fault = undefined; idle = () => ctx.isIdle();
       await restoreMain(ctx, active);
+      showBudget(ctx);
       if (ctx.mode === 'tui') unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); });
       // A one-shot run (`pi -p`, JSON) exits after its own prompt, which would end every conversation connected to it.
       if (ctx.mode !== 'print' && ctx.mode !== 'json') closeWindows = await serveWindows(dir, children, () => !stopping && !importing && !pendingImport(dir), deliverReport);
@@ -525,10 +534,7 @@ export default function optchat(pi: ExtensionAPI) {
       const current = ctx.getSystemPrompt();
       if (current.startsWith(MASTER.slice(0, 40))) prompt = current;
       // A turn past its budget moves its steps into the view, keeping the task and the last tool call whole (#146).
-      // The window is Pi's effective one: a per-model `maxContext` set in /context caps the model spec, so this budget and the
-      // figure the footer shows move with the number you set there. Pi reports it while the token count is unknown too.
-      const window = ctx.getContextUsage()?.contextWindow ?? ctx.model?.contextWindow;
-      const budget = refreshBudget(window, refreshFraction(a.config.refreshAt));
+      const budget = budgetFor(ctx, a);
       const refresh = refreshPoint(run, keep, budget);
       if (refresh) {
         const { cut, size } = refresh, began = Date.now();
