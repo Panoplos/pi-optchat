@@ -159,6 +159,36 @@ test('a refusal the model itself stops with is final, without asking again', { t
   assert.equal(calls.length, 1);
 });
 
+/** A compactor on a stub model that hands out these reply contents in turn, then the last one again. */
+function silentCompressor(contents: AssistantMessage['content'][]) {
+  const calls: AssistantMessage['content'][] = [];
+  const compress = coreCompressor({ retryable: () => false, model: () => ({
+    model: { id: 'compactor', name: 'compactor', api: 'openai-completions', provider: 'host', baseUrl: 'https://invalid.local', reasoning: true,
+      input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200000, maxTokens: 1000 },
+    stream: (model) => {
+      const content = contents[calls.length] ?? contents.at(-1)!;
+      calls.push(content);
+      const stream = createAssistantMessageEventStream(), message: AssistantMessage = { role: 'assistant', content, api: model.api, provider: model.provider,
+        model: model.id, timestamp: Date.now(), stopReason: 'stop', usage: emptyUsage() };
+      stream.push({ type: 'done', reason: 'stop', message }); stream.end();
+      return stream;
+    } }) });
+  return { calls, compress: (source: string) => compress({ context: '<chat>\n</chat>', source: `${'x'.repeat(600)}\n${source}`, part: { l: 0, i: 0 }, images: [] }, new AbortController().signal) };
+}
+const WORDLESS: AssistantMessage['content'] = [{ type: 'thinking', thinking: 'both lines say the same thing' }];
+
+test('a reply that says nothing at all is asked again, like one cut off at the token limit', async () => {
+  const { calls, compress } = silentCompressor([WORDLESS, [{ type: 'text', text: 'a line' }]]);
+  assert.equal(await compress('user: a long message'), 'a line');
+  assert.equal(calls.length, 2, 'a reply with no text is no summary, and the next one is used');
+});
+
+test('5 replies that say nothing at all are a refusal like a cut-off five, so the node is not asked again', async () => {
+  const { calls, compress } = silentCompressor([WORDLESS]);
+  await assert.rejects(compress('user: a long message'), (error: Error) => error instanceof Refused && /no whole line in 5 tries/.test(error.message));
+  assert.equal(calls.length, 5, 'asked 5 times and then given up on, never retried later');
+});
+
 test("a host's own compactor prompt is the one the model gets, and COMPACT is used without one", async () => {
   const prompts: (string | undefined)[] = [];
   const compressor = (system?: string) => coreCompressor({ retryable: () => false, system, model: () => ({
