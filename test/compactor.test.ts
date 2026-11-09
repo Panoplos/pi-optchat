@@ -159,6 +159,26 @@ test('a refusal the model itself stops with is final, without asking again', { t
   assert.equal(calls.length, 1);
 });
 
+test('a reply with no text at all is asked again, like a cut-off one', { timeout: 5000 }, async () => {
+  // DeepSeek through a gateway can spend the whole output on reasoning and stop with nothing to say.
+  const replies: AssistantMessage['content'][] = [
+    [{ type: 'thinking', thinking: 'both lines say the same thing' }],
+    [{ type: 'text', text: 'a line' }],
+  ];
+  const compressor = coreCompressor({ retryable: () => false, model: () => ({
+    model: { id: 'compactor', name: 'compactor', api: 'openai-completions', provider: 'host', baseUrl: 'https://invalid.local', reasoning: true,
+      input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200000, maxTokens: 1000 },
+    stream: (model) => {
+      const stream = createAssistantMessageEventStream(), message: AssistantMessage = { role: 'assistant', content: replies.shift()!, api: model.api,
+        provider: model.provider, model: model.id, timestamp: Date.now(), stopReason: 'stop', usage: emptyUsage() };
+      stream.push({ type: 'done', reason: 'stop', message }); stream.end();
+      return stream;
+    } }) });
+  const input = { context: '<chat>\n</chat>', source: 'x'.repeat(600), part: { l: 0, i: 0 }, images: [] };
+  assert.equal(await compressor(input, new AbortController().signal), 'a line');
+  assert.equal(replies.length, 0, 'the second call is the one that answered');
+});
+
 test("a host's own compactor prompt is the one the model gets, and COMPACT is used without one", async () => {
   const prompts: (string | undefined)[] = [];
   const compressor = (system?: string) => coreCompressor({ retryable: () => false, system, model: () => ({

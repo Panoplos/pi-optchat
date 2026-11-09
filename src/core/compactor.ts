@@ -117,11 +117,12 @@ export function createCompressor({ model: resolve, retryable, onUsage = () => {}
       if (reply.stopReason === 'error' || reply.stopReason === 'aborted') throw new Error(reply.errorMessage ?? `Compactor ${reply.stopReason}`);
       // Answered by name only, so the images were the error: a short message has nothing more to say than its names.
       if (short && !images.length) return input.source;
-      // A reply cut off at the token limit, or one that calls a tool, is no summary: ask again.
+      // A reply cut off at the token limit, one that calls a tool, or one that spent all its output on reasoning and stopped with
+      // nothing to say (DeepSeek through a gateway does) is no summary: ask again, and only a refused answer is kept raw.
       if (reply.stopReason === 'length' || reply.content.some(c => c.type === 'toolCall')) continue;
       // The compactions' view shows each line under its id+n| head, which a line can copy.
       const line = reply.content.filter(c => c.type === 'text').map(c => c.text).join('').trim().replace(/^\d+\+\d+\|\s*/, '');
-      if (!line) throw new Refused('Compactor returned no text.');
+      if (!line) continue;
       tries.push(line);
       // A merge of two short lines can come back nearly as big as both, so a line must also shrink what it replaces; a line that
       // says what images show may be longer than the names it replaces.
