@@ -5,7 +5,7 @@ import { optchatMenu, type MenuAction } from '../src/menu.ts';
 import { defaults } from '../src/profiles.ts';
 
 const plain = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as unknown as Theme;
-const status = { profile: 'personal', messages: 5251, pending: 1, compactor: defaults.compactor, agents: defaults.subagent, error: 'Rate limited' };
+const status = { profile: 'personal', messages: 5251, pending: 1, error: 'Rate limited' };
 
 test('/optchat shows the profile status as aligned rows and returns the chosen action', () => {
   const chosen: (MenuAction | undefined)[] = [];
@@ -13,8 +13,11 @@ test('/optchat shows the profile status as aligned rows and returns the chosen a
   const lines = menu.render(80).map(line => line.trimEnd());
   assert.ok(lines.includes(' OptChat v1.2.3 · personal'));
   assert.ok(lines.includes(' Memory     5,251 messages · 1 pending'));
-  assert.ok(lines.includes(' Compactor  anthropic/claude-sonnet-5-5 · medium'));
+  assert.ok(lines.includes(` Compactor  Pi's model (follow)`), 'the compactor follows Pi until pinned');
   assert.ok(lines.includes(' Summaries failing: Rate limited'));
+  const pinned = optchatMenu(plain, 'OptChat', { ...status, compactor: defaults.compactor ?? { provider: 'anthropic', model: 'claude-sonnet-5-5', thinking: 'medium' } },
+    () => {}).render(80).map(line => line.trimEnd());
+  assert.ok(pinned.includes(' Compactor  anthropic/claude-sonnet-5-5 · medium'), 'a pinned model is shown as it is');
   menu.handleInput('j'); menu.handleInput('\r');
   menu.handleInput('\x1b');
   assert.deepEqual(chosen, ['settings', undefined]);

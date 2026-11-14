@@ -3,9 +3,13 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
+import { createAssistantMessageEventStream, type AssistantMessage, type Context } from '@earendil-works/pi-ai';
+import { createAgentSession, DefaultResourceLoader, ModelRegistry, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import optchat from '../src/index.ts';
-import { createProfile, loadConfig, profilePath, saveConfig, type ModelChoice } from '../src/profiles.ts';
+import { createProfile, defaults, loadConfig, profilePath, roleChoice, saveConfig, type ModelChoice } from '../src/profiles.ts';
+import { createCompressor } from '../src/compactor.ts';
+import { COMPACT } from '../src/core/prompts.ts';
+import { emptyUsage } from '../src/usage.ts';
 import { removeDir } from './support.ts';
 
 const model = (id: string, reasoning: boolean) =>
@@ -76,4 +80,80 @@ test('the main model and thinking level follow the profile', async () => {
     if (oldHome === undefined) delete process.env.OPTCHAT_HOME; else process.env.OPTCHAT_HOME = oldHome;
     removeDir(dir);
   }
+});
+
+test('the compactor defaults to the model Pi is on and follows a switch', async () => {
+  const dir = mkdtempSync(join(process.platform === 'darwin' ? '/tmp' : tmpdir(), 'oc-follow-'));
+  const oldHome = process.env.OPTCHAT_HOME;
+  process.env.OPTCHAT_HOME = dir;
+  const sessions: { close: () => Promise<void> }[] = [];
+  const summarized: string[] = [];
+  try {
+    createProfile('fixture');
+    const profile = profilePath('fixture');
+    // No compactor and no subagent in config.json: both follow the model Pi is on.
+    assert.equal(loadConfig(profile).compactor, undefined);
+    assert.equal(loadConfig(profile).subagent, undefined);
+    const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, modelsStorePath: join(dir, 'models-cache.json'), refreshOnCreate: false });
+    runtime.registerProvider('fixture', { baseUrl: 'https://invalid.local', apiKey: 'synthetic', api: 'openai-completions', models: [model('plain', false), model('deep', true)],
+      streamSimple(selected) {
+        summarized.push(selected.id);
+        const reply: AssistantMessage = { role: 'assistant', content: [{ type: 'text', text: 'Summary.' }], timestamp: Date.now(),
+          stopReason: 'stop', api: selected.api, provider: selected.provider, model: selected.id, usage: emptyUsage() };
+        const stream = createAssistantMessageEventStream();
+        queueMicrotask(() => { stream.push({ type: 'done', reason: 'stop', message: reply }); stream.end(); });
+        return stream;
+      } });
+    const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, cacheWarming: 'off', retry: { enabled: false } });
+    const loader = new DefaultResourceLoader({ cwd: dir, agentDir: join(dir, 'agent'), settingsManager,
+      noExtensions: true, noContextFiles: true, noSkills: true, noPromptTemplates: true, extensionFactories: [optchat] });
+    await loader.reload();
+    const open = async () => {
+      await loader.reload();
+      const manager = SessionManager.create(dir, join(dir, 'sessions'));
+      manager.appendCustomEntry('optchat.profile', { name: 'fixture' });
+      const { session } = await createAgentSession({ modelRuntime: runtime, model: runtime.getModel('fixture', 'plain'), resourceLoader: loader, settingsManager, sessionManager: manager });
+      const notes: string[] = [], errors: string[] = [];
+      await session.bindExtensions({ uiContext: { ...session.extensionRunner.getUIContext(), notify: text => { notes.push(text); } }, mode: 'print', onError: error => { errors.push(error.error); } });
+      const opened = { session, notes, errors, close: async () => { await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' }); session.dispose(); } };
+      sessions.push(opened);
+      return opened;
+    };
+
+    const first = await open();
+    assert.ok(first.notes.some(n => n.includes('Compactor: fixture/plain')), `the compactor follows Pi's model: ${first.notes.join(' / ')}`);
+    await first.session.setModel(runtime.getModel('fixture', 'deep')!);
+    for (let i = 0; i < 100 && loadConfig(profile).main?.model !== 'deep'; i++) await new Promise(r => setTimeout(r, 10));
+    assert.deepEqual(loadConfig(profile).main, { provider: 'fixture', model: 'deep', thinking: 'off' });
+    await first.close();
+    await new Promise(r => setTimeout(r, 300));
+
+    const second = await open();
+    assert.ok(second.notes.some(n => n.includes('Compactor: fixture/deep')), `the saved pick is the model it follows: ${second.notes.join(' / ')} errors: ${second.errors.join(' / ')}`);
+    await second.close();
+
+    // The summary request itself: the same getter the extension passes to the compactor.
+    const config = loadConfig(profile);
+    // Past NODE bytes, which the compactor sends whole without asking a model.
+    const long = `0+1|user: ${'hello '.repeat(200)}`;
+    const summary = await createCompressor(new ModelRegistry(runtime), () => roleChoice(config, 'compactor')!)(
+      { context: `${long}\n`, source: long, part: { l: 0, i: 0 }, images: [] }, new AbortController().signal);
+    assert.equal(summary, 'Summary.');
+    assert.deepEqual(summarized, ['deep'], 'the summary request goes to the model Pi is on');
+  } finally {
+    for (const session of [...sessions]) await session.close();
+    if (oldHome === undefined) delete process.env.OPTCHAT_HOME; else process.env.OPTCHAT_HOME = oldHome;
+    removeDir(dir);
+  }
+});
+
+test('a role with no saved pick follows the model Pi is on now', () => {
+  // What the import dialog and its compactor ask for: a profile whose config.json has no compactor, subagent or main yet
+  // (picks are only saved once one is made in Pi) still compresses on Pi's model instead of refusing.
+  const pi: ModelChoice = { provider: 'fixture', model: 'plain', thinking: 'off' };
+  assert.deepEqual(roleChoice(defaults, 'compactor', pi), pi);
+  const main: ModelChoice = { provider: 'fixture', model: 'deep', thinking: 'low' };
+  assert.deepEqual(roleChoice({ ...defaults, main }, 'compactor', pi), main, 'the pick saved at the last /model wins over the model Pi is on now');
+  const pinned: ModelChoice = { provider: 'fixture', model: 'pinned', thinking: 'high' };
+  assert.deepEqual(roleChoice({ ...defaults, main, compactor: pinned }, 'compactor', pi), pinned, 'and the compactor\'s own pick wins over both');
 });

@@ -102,9 +102,9 @@ test('the main window title follows the real Pi session: profile, working, runni
     session = (await createAgentSession({ modelRuntime: runtime, model: runtime.getModel('fixture', 'fixture'),
       resourceLoader: loader, settingsManager, sessionManager: manager, tools: ['zoom', 'date', 'spawn'] })).session;
     const titles: string[] = [];
-    const statuses: (string | undefined)[] = [];
+    const statuses: [string, string | undefined][] = [];
     const uiContext: ExtensionUIContext = { ...session.extensionRunner.getUIContext(), setTitle: title => { titles.push(title); },
-      setStatus: (_key, text) => { statuses.push(text); } };
+      setStatus: (key, text) => { statuses.push([key, text]); } };
     await session.bindExtensions({ uiContext });
 
     assert.equal(titles[0], 'π fixture');
@@ -119,7 +119,8 @@ test('the main window title follows the real Pi session: profile, working, runni
     mkdirSync(join(profilePath('fixture'), 'imports'), { recursive: true }); writeFileSync(journal, '{');
     release(); await running; await session.agent.waitForIdle();
     await until(() => titles.at(-1) === 'π fixture');
-    assert.match(statuses.at(-1) ?? '', / · import journal invalid$/);
+    assert.deepEqual(statuses.filter(([key]) => key === 'optchat').at(-1), ['optchat', 'import journal invalid']);
+    assert.deepEqual(statuses.filter(([key]) => key === 'stats:optchat').at(-1), ['stats:optchat', 'fixture']);
     rmSync(journal);
 
     const before = titles.length;

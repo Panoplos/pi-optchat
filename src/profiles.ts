@@ -14,14 +14,15 @@ const PIPE_PREFIX = '\\\\.\\pipe\\';
 export const THINKING = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 export interface ModelChoice { provider: string; model: string; thinking: typeof THINKING[number] }
 export const dataHome = () => resolve(process.env.OPTCHAT_HOME ?? join(homedir(), '.optchat'));
-/** `main` is the last model and thinking level picked in Pi while this profile was open, recorded on the first open too. */
-export interface ProfileConfig extends Settings { compactor: ModelChoice; subagent: ModelChoice; main?: ModelChoice }
-/** A new profile's config. One shared object: copy it, don't change it. */
-export const defaults: ProfileConfig = {
-  compactor: { provider: 'anthropic', model: 'claude-sonnet-5-5', thinking: 'medium' },
-  subagent: { provider: 'anthropic', model: 'claude-opus-5-5', thinking: 'high' },
-  ...DEFAULT_SETTINGS,
-};
+/** `main` is the last model and thinking level picked in Pi while this profile was open, recorded on the first open too.
+ * A role without its own pick follows `main`, so OptChat runs on the model the user is already using. */
+export interface ProfileConfig extends Settings { compactor?: ModelChoice; subagent?: ModelChoice; main?: ModelChoice }
+/** Roles whose own pick overrides following Pi's model. */
+export type RoleName = 'compactor' | 'subagent';
+/** What a role runs on: its own pick, else the model saved from Pi (`main`), else the model Pi is on now, which a profile that has not saved one yet passes in. */
+export const roleChoice = (config: ProfileConfig, role: RoleName, pi?: ModelChoice) => config[role] ?? config.main ?? pi;
+/** A new profile's config: one shared object to copy, whose roles follow Pi's model until the user pins one. */
+export const defaults: ProfileConfig = { ...DEFAULT_SETTINGS };
 const PROFILE_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 /** `home` is OptChat's data directory, `dataHome()` unless a host passes its own. */
 export function profilePath(name: string, home = dataHome()) {
@@ -75,11 +76,13 @@ function modelChoice(value: unknown): value is ModelChoice {
   return record(value) && typeof value.provider === 'string' && typeof value.model === 'string'
     && THINKING.some(level => level === value.thinking);
 }
+/** An absent choice is valid: that role follows the main model. */
+const optionalChoice = (value: unknown) => value === undefined || modelChoice(value);
 export const loadConfig = (dir: string) => parseConfig(dir, JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')));
 function parseConfig(dir: string, value: unknown): ProfileConfig {
-  if (!record(value) || !modelChoice(value.compactor) || !modelChoice(value.subagent) || value.main !== undefined && !modelChoice(value.main)) throw new Error(`Invalid profile config: ${dir}/config.json`);
+  if (!record(value) || !optionalChoice(value.compactor) || !optionalChoice(value.subagent) || value.main !== undefined && !modelChoice(value.main)) throw new Error(`Invalid profile config: ${dir}/config.json`);
   const { compactor, subagent, main } = value;
-  try { return { compactor, subagent, ...main && { main }, ...readSettings(value) }; }
+  try { return { ...compactor && { compactor }, ...subagent && { subagent }, ...main && { main }, ...readSettings(value) }; }
   catch (error) { throw new Error(`Invalid profile config: ${dir}/config.json: ${error instanceof Error ? error.message : String(error)}`); }
 }
 /** What another app may change: any setting, and the compactor or subagent model. The main model follows Pi's own pick. */

@@ -66,7 +66,7 @@ async function open(file: string, replies: FauxResponseStep[], compress: Compres
   for (const extension of extensions(memoryExtension)) registry.install(extension);
   const harness = await Harness.open(await SqliteStorage.open(db, { prefix: 'pi_' }),
     { models, registry, settings: { compaction: { enabled: false }, afterFailedRun: 'continue' },
-      onReport: report => { if (report.kind === 'task_faulted') fault(report.error); } }, context);
+      onReport: report => { if (report.kind === 'task_faulted' || report.kind === 'task_interrupted') fault(report.error); } }, context);
   const root = await harness.root(context, { agent: { model } });
   memoryExtension.attach(harness, context);
   importer.attach(harness, context);

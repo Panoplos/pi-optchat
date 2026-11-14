@@ -118,13 +118,12 @@ export function lastStep(run: readonly AnyMessage[]) {
   return step > task && task >= 0 ? step : 0;
 }
 /** The run's new `keep` and the size it moves into the view, when what is sent since the last refresh passes the budget.
- * What stays verbatim (the task and the last step) must fit in half the budget: a bigger last step, such as many parallel
- * reads, would otherwise pass the budget again on the next call and refresh every call. It waits for a smaller step instead. */
+ * The tail itself is always cut to the budget by `refreshedRun`, so no step is too big to refresh at. */
 export function refreshPoint(run: readonly AnyMessage[], keep: number, budget: number | undefined) {
   const cut = lastStep(run);
   if (!budget || cut <= keep) return undefined;
   const size = chars(run.slice(keep));
-  if (size <= budget || chars(taskOf(run)) + chars(run.slice(cut)) > budget / 2) return undefined;
+  if (size <= budget) return undefined;
   return { cut, size };
 }
 /** The task: the messages the run started with, its request and any reports Pi gave that turn. */
@@ -132,10 +131,60 @@ const taskOf = <M extends AnyMessage>(run: readonly M[]) => {
   const first = run.findIndex(m => m.role === 'user'), end = run.findIndex((m, i) => i > first && m.role !== 'user');
   return first < 0 ? [] : run.slice(first, end < 0 ? undefined : end);
 };
-/** The run as sent after a mid-turn refresh at `keep`: the task verbatim, then the run from `keep` on. Everything between is in the view. */
-export function refreshedRun<M extends AnyMessage>(run: readonly M[], keep: number, note: string): (M | UserMessage)[] {
+/** The task keeps up to half a refresh budget, since the recipe keeps your own words, and every other message keeps at
+ * most an eighth of it. */
+const TASK_SHARE = 2, MESSAGE_SHARE = 8;
+const leftNote = (left: number) => `\n[… ${left.toLocaleString('en-US')} more characters; the view keeps this message as one memory line]`;
+/** `text` cut to its head, or undefined when it is short enough to send whole. */
+function cutText(text: string, keep: number): string | undefined {
+  if (text.length <= keep + 64) return undefined;
+  const cut = text.slice(0, Math.max(0, keep));
+  return cut + leftNote(text.length - cut.length);
+}
+/**
+ * What each message may send: the task holds up to half the budget, every other message a fixed eighth of it. Both caps
+ * come from the budget alone, never from how many messages the step has added, so a message already sent stays byte
+ * identical in the next call and the prefix cache still matches it: the requests of one turn read one another's cache
+ * instead of paying for the whole tail each time. The tail is therefore bounded per message rather than in aggregate, a
+ * step of parallel results bounded result by result, and `keep` moving steps into the view is what holds a turn to its
+ * budget (#146). Tool calls and images stay whole: the first must match its result, and the recipe keeps the second.
+ */
+function bounded<M extends AnyMessage>(messages: readonly (M | UserMessage)[], budget: number | undefined): (M | UserMessage)[] {
+  if (!budget) return [...messages];
+  // The task is the first user message, as in `lastStep`: a run can start with Pi's system message.
+  const taskAt = messages.findIndex(message => message.role === 'user');
+  const task = taskAt >= 0 ? messages[taskAt] : undefined;
+  const taskKeep = task ? Math.min(messageChars(task), Math.floor(budget / TASK_SHARE)) : 0;
+  const share = Math.max(1, Math.floor(budget / MESSAGE_SHARE));
+  return messages.map((message, at) => {
+    const keep = at === taskAt ? taskKeep : share;
+    if (!('content' in message) || message.content === undefined) return message;
+    if (typeof message.content === 'string') {
+      // Only the user's own words can be a plain string here; other roles carry blocks or are never in a tail.
+      const text = cutText(message.content, keep);
+      return message.role === 'user' && text !== undefined ? { ...message, content: text } : message;
+    }
+    return cutBlocks(message, keep);
+  });
+}
+/** `message` with every text it carries cut to `keep`; tool calls and images stay whole, and the message itself when nothing was cut. */
+function cutBlocks<M extends AnyMessage>(message: M, keep: number): M {
+  if (!('content' in message) || message.content === undefined || typeof message.content === 'string') return message;
+  let cut = false;
+  const content = message.content.map(block => {
+    const text = block.type === 'text' ? block.text : block.type === 'thinking' ? block.thinking : undefined;
+    const shortened = text === undefined ? undefined : cutText(text, keep);
+    if (shortened === undefined) return block;
+    cut = true;
+    return block.type === 'thinking' ? { ...block, thinking: shortened } : { ...block, text: shortened };
+  });
+  return cut ? { ...message, content } as M : message;
+}
+/** The run as sent after a mid-turn refresh at `keep`: the task, then the run from `keep` on, both held to `budget`
+ * characters so a single step, such as many parallel tool results, cannot outgrow the window. Everything between is in the view. */
+export function refreshedRun<M extends AnyMessage>(run: readonly M[], keep: number, note: string, budget?: number): (M | UserMessage)[] {
   const task = taskOf(run), last = task.at(-1);
-  if (!keep || !last || !is(last, 'user')) return [...run];
+  if (!keep || !last || !is(last, 'user')) return bounded(run, budget);
   const content = typeof last.content === 'string' ? [{ type: 'text' as const, text: last.content }] : last.content;
-  return [...task.slice(0, -1), { ...last, content: [...content, { type: 'text' as const, text: `\n\n${note}` }] }, ...run.slice(keep)];
+  return bounded([...task.slice(0, -1), { ...last, content: [...content, { type: 'text' as const, text: `\n\n${note}` }] }, ...run.slice(keep)], budget);
 }

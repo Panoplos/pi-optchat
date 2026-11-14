@@ -4,17 +4,17 @@ import { join } from 'node:path';
 import { hostname } from 'node:os';
 import { getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
-import { parseArgs, parseSessionEntries, parseSkillBlock, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext, type CustomEntry, type FileEntry, type SessionStartEvent } from '@earendil-works/pi-coding-agent';
+import { parseArgs, parseSessionEntries, parseSkillBlock, type ContextUsage, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext, type CustomEntry, type ExtensionUIContext, type FileEntry, type SessionStartEvent } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { Memory } from './memory.ts';
 import { atomicWrite, storeFor } from './store.ts';
 import { createCompressor } from './compactor.ts';
-import { applyConfig, createProfile, describeOwner, holdProfile, isWindows, lastProfile, listProfiles, loadConfig, memoryDirectory, profilePath, readInstructions, type ModelChoice, rememberProfile, saveInstructions, ProfileBusyError, type ConfigPatch, type ProfileConfig } from './profiles.ts';
+import { applyConfig, createProfile, describeOwner, holdProfile, isWindows, lastProfile, listProfiles, loadConfig, memoryDirectory, profilePath, readInstructions, rememberProfile, roleChoice, saveInstructions, ProfileBusyError, type ConfigPatch, type ModelChoice, type ProfileConfig, type RoleName } from './profiles.ts';
 import { allowSearch, CONTINUITY, IMPORT_GUIDANCE, SEARCH_DOC, TURN_REFRESHED, VIEW_DOC } from './core/prompts.ts';
 import { MASTER, modelsHint } from './prompts.ts';
 import { cachePayload, record } from './core/cache.ts';
 import { saveImages } from './images.ts';
-import { asUser, atWork, buildContext, logMessage, previousExchange, refreshFraction, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, textContent, typedText } from './transcript.ts';
+import { asUser, atWork, buildContext, logMessage, previousExchange, refreshFraction, reportReceipt, REPORT_RECEIPT, REPORT_TYPE, RUN_BOUNDARY, textContent, turnStepUsage, turnUsage, typedText } from './transcript.ts';
 import { boundedMessage, refreshedRun, refreshBudget, refreshPoint } from './core/messages.ts';
 import { registerReportRenderer, type ReportDetails } from './report-message.ts';
 import { memoryTools } from './tools.ts';
@@ -66,6 +66,9 @@ export const version = ((): string | undefined => {
   } catch { return undefined; }
 })();
 const brand = version ? `OptChat v${version}` : 'OptChat';
+
+/** Pi's `setContextUsage`, which the pinned Pi types predate; a Pi without it shows its own context figure instead. */
+const usageSlot = (ui: ExtensionUIContext) => ui as ExtensionUIContext & { setContextUsage?: (usage: ContextUsage | undefined) => void };
 
 export default function optchat(pi: ExtensionAPI) {
   let active: Active | undefined;
@@ -148,6 +151,14 @@ export default function optchat(pi: ExtensionAPI) {
   let restoring = false, restored: ModelChoice | undefined;
   const sameChoice = (a: ModelChoice | undefined, b: ModelChoice) => a?.provider === b.provider && a.model === b.model && a.thinking === b.thinking;
   const mainChoice = ({ model }: ExtensionContext): ModelChoice | undefined => model && { provider: model.provider, model: model.id, thinking: pi.getThinkingLevel() };
+  /** This turn's refresh threshold, in characters, for Pi's effective window: a per-model `maxContext` set in /context caps the
+   * model spec, so the budget and the figure the footer shows move with the number you set there. Pi reports it before the token count. */
+  const budgetFor = (ctx: ExtensionContext, a: Active) =>
+    refreshBudget(ctx.getContextUsage()?.contextWindow ?? ctx.model?.contextWindow, refreshFraction(a.config.refreshAt));
+  /** Before a turn has a tail, the footer shows the threshold the turn is held to instead of Pi's raw window. */
+  const showBudget = (ctx: ExtensionContext) => {
+    if (active) usageSlot(ctx.ui).setContextUsage?.(turnUsage([], 0, budgetFor(ctx, active)));
+  };
   const rememberMain = (ctx: ExtensionContext) => {
     // Read Pi's state, not the event: a model switch reports its thinking level before the model, and a late handler sees where both ended up.
     const a = active, main = mainChoice(ctx);
@@ -157,12 +168,13 @@ export default function optchat(pi: ExtensionAPI) {
     try { applyConfig(a.dir, a.config, { main }); }
     catch (error) { ctx.ui.notify(`Could not save the main model to ${a.name}: ${errorText(error)}`, 'error'); }
   };
-  pi.on('model_select', (_event, ctx) => rememberMain(ctx));
+  pi.on('model_select', (_event, ctx) => { rememberMain(ctx); showBudget(ctx); });
   pi.on('thinking_level_select', (_event, ctx) => rememberMain(ctx));
-  const restoreMain = async (ctx: ExtensionContext, { name, config: { main } }: Active) => {
+  const restoreMain = async (ctx: ExtensionContext, active: Active) => {
+    const { name, config: { main } } = active;
     restored = undefined;
     if (!main) {
-      // Nothing saved yet: record where Pi is, so later opens keep this model instead of following Pi's default.
+      // A profile written before the main model followed Pi has no pick to restore. Record where Pi is, so it stops following Pi from the next open on.
       if (!pinnedModel) rememberMain(ctx);
       return;
     }
@@ -185,12 +197,14 @@ export default function optchat(pi: ExtensionAPI) {
     if (rpcWindow) return;
     const a = active;
     if (ctx.mode === 'rpc') ctx.ui.setStatus(ROLE_STATUS, a ? JSON.stringify({ role: 'owner', profile: a.name } satisfies Role) : undefined);
-    if (!a) { ctx.ui.setStatus('optchat', 'OptChat: choose profile'); return; }
+    if (!a) { ctx.ui.setStatus('stats:optchat', 'choose profile'); ctx.ui.setStatus('optchat', undefined); return; }
     // A display only: a broken import journal is refused where it matters, never here.
-    let note = '';
-    try { note = importing ? ' · importing' : pendingImport(a.dir) ? ' · import paused: /optchat import' : ''; }
-    catch { note = ' · import journal invalid'; }
-    ctx.ui.setStatus('optchat', `OptChat: ${a.name} · ${a.memory.root.length} messages · ${a.memory.pending} pending · ${a.children.ids.length} agents${note}`);
+    let note: string | undefined;
+    try { note = importing ? 'importing' : pendingImport(a.dir) ? 'import paused: /optchat import' : undefined; }
+    catch { note = 'import journal invalid'; }
+    // The name sits in Pi's stats line; only a state that needs a word gets the status line.
+    ctx.ui.setStatus('stats:optchat', a.name);
+    ctx.ui.setStatus('optchat', note);
   };
   // `steered` describes this process's Pi queue, so it is not journaled.
   const saveReports = () => { if (active) atomicWrite(join(active.dir, 'pending-reports.json'), JSON.stringify(reports, (key, value: unknown) => key === 'steered' ? undefined : value)); };
@@ -290,13 +304,20 @@ export default function optchat(pi: ExtensionAPI) {
     let openingMemory: Memory | undefined;
     try {
       const config = loadConfig(dir);
+      // A role without its own pick follows Pi's model; the profile saves every pick, so this tracks /model and /thinking.
+      const modelFor = (role: RoleName): ModelChoice | undefined => roleChoice(config, role, mainChoice(ctx));
+      const picked = (role: RoleName): ModelChoice => {
+        const choice = modelFor(role);
+        if (!choice) throw new Error(`No model yet: choose one in Pi (/model), or give ${role === 'compactor' ? 'the compactor' : 'subagents'} their own with /optchat ${role === 'compactor' ? 'model' : 'agents model'}.`);
+        return choice;
+      };
       const sessionId = ctx.sessionManager.getSessionId();
       const usage = new UsageLedger(dir);
       usage.backfill(ctx.sessionManager.getEntries(), sessionId);
       const pending = join(dir, 'pending-reports.json');
       const saved: unknown = existsSync(pending) ? JSON.parse(readFileSync(pending, 'utf8')) : [];
       if (!Array.isArray(saved) || !saved.every(isPendingReport)) throw new Error('Invalid pending report journal.');
-      const memory = await Memory.open(memoryDirectory(dir), createCompressor(ctx.modelRegistry, () => config.compactor, { onUsage: message => {
+      const memory = await Memory.open(memoryDirectory(dir), createCompressor(ctx.modelRegistry, () => picked('compactor'), { onUsage: message => {
         usage.compression(message, 'compactor', sessionId);
         status(ctx);
       }, limits: dir, accepted: () => config.summaryAcceptBytes }), { warn: warning => ctx.ui.notify(warning, 'error'), jobs: config.jobs });
@@ -304,9 +325,9 @@ export default function optchat(pi: ExtensionAPI) {
       const inbox = new Inbox(dir);
       const recovered = pendingImport(dir) ? 0 : inbox.recover(memory);
       if (recovered) ctx.ui.notify(`Recovered ${recovered} unanswered inputs into ${name}'s memory. Ask to continue them when ready.`, 'info');
-      const children = new Children(memory, ctx.modelRegistry, () => config.subagent, () => `${readInstructions(dir)}\n\n${IMPORT_GUIDANCE}`,
+      const children = new Children(memory, ctx.modelRegistry, () => picked('subagent'), () => `${readInstructions(dir)}\n\n${IMPORT_GUIDANCE}`,
         deliverReport, text => ctx.ui.notify(text, 'error'), dir, { parentSession: sessionId, usage, limits: dir, builtins: () => loadedBuiltins(pi), settings: () => config, hold: holdReports,
-          summarizeHandoff: createHandoffSummarizer(ctx.modelRegistry, () => config.compactor, message => usage.compression(message, 'compactor', sessionId), undefined, dir) });
+          summarizeHandoff: createHandoffSummarizer(ctx.modelRegistry, () => picked('compactor'), message => usage.compression(message, 'compactor', sessionId), undefined, dir) });
       const loggedReports = new Set(memory.root.map(e => e.receipt));
       // Reports a crash held back with their unfinished siblings are delivered now, as they are.
       reports = saved.map(s => typeof s === 'string' ? { text: s } : { text: s.text, count: s.count, quiet: s.quiet })
@@ -315,6 +336,7 @@ export default function optchat(pi: ExtensionAPI) {
       rememberProfile(name);
       active = { name, session: sessionId, dir, config, memory, inbox, children, usage, unlock }; fault = undefined; idle = () => ctx.isIdle();
       await restoreMain(ctx, active);
+      showBudget(ctx);
       if (ctx.mode === 'tui') unmountNavigation = mountNavigation(ctx, children, memory, shortcut, page => { void inspect(ctx, page); });
       // A one-shot run (`pi -p`, JSON) exits after its own prompt, which would end every conversation connected to it.
       if (ctx.mode !== 'print' && ctx.mode !== 'json') closeWindows = await serveWindows(dir, children, () => !stopping && !importing && !pendingImport(dir), deliverReport, patch => configure(ctx, patch), (action, text) => {
@@ -322,8 +344,9 @@ export default function optchat(pi: ExtensionAPI) {
       });
       untitle = children.subscribe(() => showTitle(ctx)); showTitle(ctx);
       status(ctx);
+      const compactor = modelFor('compactor');
       // An RPC host (the OptChat app) shows the profile itself; the banner would sit over its first prompt every start.
-      if (ctx.mode !== 'rpc') ctx.ui.notify(`${brand} · ${name} · ${memory.root.length} messages\nCompactor: ${config.compactor.provider}/${config.compactor.model} (${config.compactor.thinking})`, 'info');
+      if (ctx.mode !== 'rpc') ctx.ui.notify(`${brand} · ${name} · ${memory.root.length} messages\nCompactor: ${compactor ? `${compactor.provider}/${compactor.model} (${compactor.thinking})` : 'Pi\'s model (pick one in Pi)'}`, 'info');
       const queuedReports = [...reports];
       if (!pendingImport(dir)) {
         // Queued before handoff recovery can start a turn, so a saved window start goes in ahead of that window's handoff.
@@ -500,7 +523,7 @@ export default function optchat(pi: ExtensionAPI) {
     pi.appendEntry(RUN_BOUNDARY, { state: 'start' });
     // Pi's own prompt sections (AGENTS.md files, skills, cwd) stay; the profile's instructions go last.
     syncSearch(a.config);
-    event.systemPromptOptions.customPrompt = allowSearch(`${MASTER}\n\n${modelsHint(a.config.subagent)}\n\n${VIEW_DOC}${a.config.previousExchange ? CONTINUITY : ''}${a.config.memorySearch ? SEARCH_DOC : ''}`, a.config.memorySearch);
+    event.systemPromptOptions.customPrompt = allowSearch(`${MASTER}\n\n${modelsHint(roleChoice(a.config, 'subagent'))}\n\n${VIEW_DOC}${a.config.previousExchange ? CONTINUITY : ''}${a.config.memorySearch ? SEARCH_DOC : ''}`, a.config.memorySearch);
     event.systemPromptOptions.sections.instructions = `${readInstructions(a.dir)}\n\n${IMPORT_GUIDANCE}`;
     refreshContextFiles(event.systemPromptOptions);
     prompt = event.systemPrompt;
@@ -551,7 +574,7 @@ export default function optchat(pi: ExtensionAPI) {
   pi.on('context_with_system', async (event, ctx) => {
     if (rpcWindow) return { messages: rpcWindow.context(event.messages) };
     try {
-      if (!active) return; // Plain Pi run: pass context through unmodified.
+      if (!active) { usageSlot(ctx.ui).setContextUsage?.(undefined); return; } // Plain Pi run: pass context through unmodified.
       const a = required();
       if (importing || pendingImport(a.dir)) throw new Error('Profile is unavailable while importing.');
       if (fault) throw new Error(fault);
@@ -574,16 +597,28 @@ export default function optchat(pi: ExtensionAPI) {
       const current = ctx.getSystemPrompt();
       if (current.startsWith(MASTER.slice(0, 40))) prompt = current;
       // A turn past its budget moves its steps into the view, keeping the task and the last tool call whole (#146).
-      const refresh = refreshPoint(run, keep, refreshBudget(ctx.model?.contextWindow, refreshFraction(a.config.refreshAt)));
+      const budget = budgetFor(ctx, a);
+      const refresh = refreshPoint(run, keep, budget);
       if (refresh) {
         const { cut, size } = refresh, began = Date.now();
         ctx.ui.setWorkingMessage(`OptChat: moving this turn's ${Math.round(size / 4000)}k tokens into memory…`);
-        try { flush(); await a.memory.settle(ctx.signal); } finally { ctx.ui.setWorkingMessage(); }
+        // The footer shows the tail at its threshold with the step memory is on, so the push is visible while it runs.
+        const step = () => {
+          const usage = turnStepUsage(budget, a.memory.stage);
+          if (usage) usageSlot(ctx.ui).setContextUsage?.(usage);
+        };
+        try {
+          flush();
+          const unsubscribe = a.memory.onChange(step);
+          try { step(); await a.memory.settle(ctx.signal); } finally { unsubscribe(); }
+        } finally { ctx.ui.setWorkingMessage(); }
         view = a.memory.render(); keep = cut;
         ctx.ui.notify(`OptChat moved ${Math.round(size / 4000)}k tokens of this turn into memory (${((Date.now() - began) / 1000).toFixed(1)}s).`, 'info');
       }
+      // The footer's context figure is the tail against this profile's refresh threshold, the number the turn is actually held to.
+      usageSlot(ctx.ui).setContextUsage?.(turnUsage(run, keep, budget));
       // Built on every call, unlike the view, so it is never out of date; it goes last, after everything cached.
-      return { messages: buildContext(event.messages, refreshedRun(run, keep, TURN_REFRESHED), view, prompt, previous, atWork(a.children.working)) };
+      return { messages: buildContext(event.messages, refreshedRun(run, keep, TURN_REFRESHED, budget), view, prompt, previous, atWork(a.children.working)) };
     } catch (error) {
       // Pi catches extension errors. Explicitly abort so it cannot fall back to old context.
       ctx.abort();
@@ -594,9 +629,13 @@ export default function optchat(pi: ExtensionAPI) {
   });
   pi.on('before_provider_request', (event, ctx) => ctx.model?.api === 'anthropic-messages' ? cachePayload(event.payload) : event.payload);
   pi.on('cache_warming_decision', () => ({ action: 'stop' }));
-  pi.on('session_before_compact', (_event, ctx) => {
+  pi.on('session_before_compact', (event, ctx) => {
     if (rpcWindow) return; // Its conversation isn't in memory: Pi's compaction keeps it in bounds.
-    ctx.ui.notify('OptChat manages history between turns. Pi compaction is disabled; an exceptionally long single run may require stopping and continuing in a new turn.', 'info');
+    // Overflow recovery is not compaction: the provider refused the request, and Pi retries the turn once it compacts. Letting it
+    // through keeps the turn alive when the declared window is wrong (a proxy capping lower); the retried request is rebuilt from
+    // the view and its tail is bounded, so it fits.
+    if (event.reason === 'overflow') return;
+    ctx.ui.notify('OptChat manages history between turns. Pi compaction is disabled.', 'info');
     return { cancel: true };
   });
   const collectUsage = (ctx: ExtensionContext) => {
@@ -735,7 +774,12 @@ export default function optchat(pi: ExtensionAPI) {
       }
       if (!job) return;
       if (!closed) { await a.memory.close(); closed = true; }
-      const compress = createCompressor(ctx.modelRegistry, () => a.config.compactor, { onUsage: message => {
+      const summarizer = (): ModelChoice => {
+        const choice = roleChoice(a.config, 'compactor', mainChoice(ctx));
+        if (!choice) throw new Error('No model yet: choose one in Pi (/model) or with /optchat model.');
+        return choice;
+      };
+      const compress = createCompressor(ctx.modelRegistry, summarizer, { onUsage: message => {
         a.usage.compression(message, 'import', ctx.sessionManager.getSessionId());
       }, limits: a.dir, accepted: () => a.config.summaryAcceptBytes });
       const completed = await start.follow(job, (signal, progress) => importRun = runImport(a.dir, compress, signal, a.config.jobs, progress), signal);
@@ -759,13 +803,16 @@ export default function optchat(pi: ExtensionAPI) {
     if (!action) {
       const a = active;
       action = await showMenu(ctx, brand, a && { profile: a.name, messages: a.memory.root.length, pending: a.memory.pending,
-        compactor: a.config.compactor, agents: a.config.subagent, error: a.memory.lastError }) ?? '';
+        compactor: roleChoice(a.config, 'compactor'), agents: roleChoice(a.config, 'subagent'), error: a.memory.lastError }) ?? '';
     }
     if (action === 'import') {
       const a = required();
       if (!ctx.hasUI) throw new Error('/optchat import requires interactive Pi.');
       return openImport(ctx, { follow: (job, run, signal) => showProgress(ctx, job, run, signal), choose: async (job, signal) => {
-        if (!job) return chooseImport(ctx, a.name, a.memory, `${a.config.compactor.provider}/${a.config.compactor.model} (${a.config.compactor.thinking})`, signal);
+        if (!job) {
+          const summarizer = roleChoice(a.config, 'compactor', mainChoice(ctx));
+          return chooseImport(ctx, a.name, a.memory, summarizer ? `${summarizer.provider}/${summarizer.model} (${summarizer.thinking})` : 'Pi\'s model', signal);
+        }
         const selected = await ctx.ui.select(`Paused ${job.mode} import · ${job.added} new messages`, ['Resume import', 'Discard staged import', 'Cancel'], { signal });
         if (selected === 'Discard staged import' && await ctx.ui.confirm('Discard import?', 'Original memory stays unchanged. Staged summaries will be removed.', { signal })) { signal.throwIfAborted(); discardImport(a.dir); }
         return selected === 'Resume import' ? 'resume' : undefined;
